@@ -29,7 +29,7 @@ Use `scripts/actions-tags-bn-queue-daemon.js` for the lightweight automatic queu
 - Enabled: true
 - Menu: blank or hidden
 
-The daemon searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, calls `Zotero.BetterNotes.api.$export.syncMDBatch` one note at a time, removes the queue tag only after verified success, and adds `Codex/BN-Synced/<PROJECT_ID>`. It also stores timers and busy locks by `PROJECT_ID`, so multiple project daemons can run in one Zotero session.
+The daemon searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, clears stale project error markers before export, calls `Zotero.BetterNotes.api.$export.syncMDBatch` one note at a time, removes the queue tag only after verified success, and adds `Codex/BN-Synced/<PROJECT_ID>`. It also stores timers and busy locks by `PROJECT_ID`, so multiple project daemons can run in one Zotero session.
 
 ## Required script edits
 
@@ -79,3 +79,5 @@ After running the manual action or daemon:
 - The Markdown YAML contains `$itemKey` matching the Zotero note key.
 
 If a note is already synced to this project root, the selected action should report `refreshed=1` after re-exporting through `syncMDBatch`. If it is synced to a different root, the script attempts to re-register it under the current `ROOT_DIR`.
+
+If Markdown sync succeeds but Zotero state saving fails, the script restores the original queue tag placement and reports `sync_succeeded_state_save_failed` so the item can be retried after the save problem is fixed.

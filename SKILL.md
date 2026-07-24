@@ -72,9 +72,10 @@ The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, `ZOTERO_API_KEY`, a
 
 - Add or preserve `Codex/BN-Note/<PROJECT_ID>` on any project-owned note so template failures and retry flows can reuse the same note.
 - Add `Codex/BN-Synced/<PROJECT_ID>` only after `syncMDBatch` succeeds and `getSyncStatus(noteID).path` is under `ROOT_DIR`.
-- On explicit queue/manual sync, call `syncMDBatch` even when the note is already registered under `ROOT_DIR`; this refreshes missing/stale Markdown when auto-sync is disabled or the file was deleted.
-- On failure, keep `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve `error.message` in the note comment if a note exists.
-- On success, remove stale project error comments from the note.
+- On explicit queue/manual sync, clear stale project error comments and save the note before calling `syncMDBatch`, then call `syncMDBatch` even when the note is already registered under `ROOT_DIR`; this refreshes missing/stale Markdown when auto-sync is disabled or the file was deleted.
+- On failure, keep or restore `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve `error.message` in the note comment if a note exists.
+- If Markdown sync succeeds but Zotero state save fails, restore the original queue-tag placement and surface `sync_succeeded_state_save_failed`.
+- On success, leave stale project error comments removed before export so Markdown does not receive old error markers.
 - Do not use `isSyncNote(noteID)` alone as proof of success; it does not prove the note is synced to this project's `ROOT_DIR`.
 - Process queued notes one at a time so one bad note does not block the rest of the batch.
 - Avoid Actions & Tags duplicate multi-select execution by ignoring per-item callbacks when both `items` and `item` are injected.
@@ -116,3 +117,4 @@ If anything fails, read `references/troubleshooting.md`.
 - `references/actions-tags-setup.md`: install and configuration details.
 - `references/troubleshooting.md`: common failure modes and fixes.
 - `COMPATIBILITY.md`: locally verified Zotero/plugin/pyzotero versions and API assumptions.
+- `tests/static_checks.py`: lightweight static regression checks for critical state-machine invariants.

@@ -283,7 +283,11 @@ function clearErrorComment(noteItem) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p><!--\\s*${escapeRegExp(ERROR_MARKER_PREFIX)}[\\s\\S]*?--></p>\\s*`, "g");
   const cleaned = html.replace(markerRegex, "");
-  if (cleaned !== html) noteItem.setNote(cleaned);
+  if (cleaned !== html) {
+    noteItem.setNote(cleaned);
+    return true;
+  }
+  return false;
 }
 
 async function applyTemplateOrFallback(parentItem, noteItem) {
@@ -385,6 +389,18 @@ function markError(rawItem, noteItem, error) {
   if (noteItem?.isNote?.()) replaceErrorComment(noteItem, error);
 }
 
+function captureQueueState(rawItem, noteItem) {
+  return {
+    rawWasQueued: hasTag(rawItem, QUEUE_TAG),
+    noteWasQueued: hasTag(noteItem, QUEUE_TAG),
+  };
+}
+
+function restoreQueueState(rawItem, noteItem, queueState) {
+  if (queueState?.rawWasQueued) addTagOnce(rawItem, QUEUE_TAG);
+  if (queueState?.noteWasQueued) addTagOnce(noteItem, QUEUE_TAG);
+}
+
 if (!Zotero.BetterNotes?.api?.$export?.syncMDBatch) {
   return "[Codex BN Sync] Better Notes API not available. Check Better Notes is installed/enabled.";
 }
@@ -437,9 +453,19 @@ for (const raw of selected) {
       if (result.contentSource === "fallback") stats.fallback += 1;
     }
 
+    if (clearErrorComment(noteItem)) {
+      await saveChangedItems([noteItem]);
+    }
+
+    const queueState = captureQueueState(raw, noteItem);
     const syncAction = await syncNoteToRoot(noteItem);
-    markDone(raw, noteItem);
-    await saveChangedItems([raw, noteItem]);
+    try {
+      markDone(raw, noteItem);
+      await saveChangedItems([raw, noteItem]);
+    } catch (stateError) {
+      restoreQueueState(raw, noteItem, queueState);
+      throw new Error(`sync_succeeded_state_save_failed: ${stateError?.message || stateError}`);
+    }
 
     if (syncAction === "refreshed") stats.refreshed += 1;
     if (syncAction === "registered") stats.registered += 1;

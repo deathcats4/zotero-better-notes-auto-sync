@@ -61,7 +61,7 @@ Default behavior:
 - error-tagged items are skipped on later polling ticks;
 - the note, if available, receives an HTML comment with the most recent `error.message`;
 - clear the error tag after fixing the cause to retry.
-- a later successful retry removes the project error marker from the note.
+- a later successful retry removes the project error marker before export, so the refreshed Markdown does not keep the old error marker.
 
 Common causes:
 
@@ -69,6 +69,18 @@ Common causes:
 - Better Notes failed to convert the note to Markdown.
 - The note was already linked to a different root and Better Notes did not update the sync status.
 - Better Notes auto-sync is disabled globally.
+- Zotero state saving failed after Markdown sync succeeded; this is reported as `sync_succeeded_state_save_failed`.
+
+## `sync_succeeded_state_save_failed`
+
+This means Better Notes export/registration succeeded, but saving Zotero tags or note content failed afterward.
+
+Expected recovery behavior:
+
+- the script restores the original `Codex/Queue/BN-Sync/<PROJECT_ID>` tag placement in memory before writing error state;
+- the item receives `Codex/BN-Sync-Error/<PROJECT_ID>`;
+- the success tag is removed;
+- after fixing the Zotero save issue, clear the error tag and let the queue daemon retry.
 
 ## Markdown exists but is in the wrong project folder
 

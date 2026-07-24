@@ -41,6 +41,12 @@ Python 依赖：
 pip install -r requirements.txt
 ```
 
+静态回归检查：
+
+```powershell
+python tests/static_checks.py
+```
+
 ## 安装到 Codex
 
 把整个目录复制到你的 Codex skills 目录，例如：
@@ -120,13 +126,13 @@ python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold
 python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id axi-gold
 ```
 
-Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Better Notes。显式排队会始终执行一次 `syncMDBatch()`，即使该 note 已登记在当前 `ROOT_DIR` 下也会刷新导出。成功后：
+Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Better Notes。显式排队会先清除旧的项目错误 marker 并保存 note，再执行一次 `syncMDBatch()`；即使该 note 已登记在当前 `ROOT_DIR` 下也会刷新导出。成功后：
 
 - 移除 `Codex/Queue/BN-Sync/PROJECT_ID`
 - 移除 `Codex/BN-Sync-Error/PROJECT_ID`
 - 添加或保留 `Codex/BN-Note/PROJECT_ID`
 - 添加 `Codex/BN-Synced/PROJECT_ID`
-- 清除旧的错误 HTML marker
+- 旧的错误 HTML marker 已在导出前清除，因此导出的 Markdown 不会携带历史错误 marker
 - 验证 Better Notes sync status 的 path 位于 `ROOT_DIR`
 - 在 `ROOT_DIR` 下创建或更新 Better Notes 管理的 Markdown 文件
 
@@ -137,6 +143,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Bette
 - 添加 `Codex/BN-Sync-Error/PROJECT_ID`
 - 移除 `Codex/BN-Synced/PROJECT_ID`
 - 在 note 中写入一条 HTML comment 形式的错误 marker，只记录 `error.message`，避免把本地 stack/path 同步进 Zotero 云端或 Markdown
+- 如果 Markdown 同步已成功但 Zotero 状态保存失败，脚本会恢复原有队列标签并报告 `sync_succeeded_state_save_failed`
 - 默认跳过 error-tagged item，直到你清除错误标签后重试
 
 ## 重要限制

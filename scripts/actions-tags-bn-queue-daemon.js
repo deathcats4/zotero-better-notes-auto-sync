@@ -246,7 +246,11 @@ function clearErrorComment(noteItem) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p><!--\\s*${escapeRegExp(ERROR_MARKER_PREFIX)}[\\s\\S]*?--></p>\\s*`, "g");
   const cleaned = html.replace(markerRegex, "");
-  if (cleaned !== html) noteItem.setNote(cleaned);
+  if (cleaned !== html) {
+    noteItem.setNote(cleaned);
+    return true;
+  }
+  return false;
 }
 
 async function applyTemplateOrFallback(parentItem, noteItem) {
@@ -347,6 +351,18 @@ function markError(rawItem, noteItem, error) {
   if (noteItem?.isNote?.()) replaceErrorComment(noteItem, error);
 }
 
+function captureQueueState(rawItem, noteItem) {
+  return {
+    rawWasQueued: hasTag(rawItem, QUEUE_TAG),
+    noteWasQueued: hasTag(noteItem, QUEUE_TAG),
+  };
+}
+
+function restoreQueueState(rawItem, noteItem, queueState) {
+  if (queueState?.rawWasQueued) addTagOnce(rawItem, QUEUE_TAG);
+  if (queueState?.noteWasQueued) addTagOnce(noteItem, QUEUE_TAG);
+}
+
 async function queuedItemsFromSearch(libraryID) {
   const search = new Zotero.Search();
   search.libraryID = libraryID;
@@ -400,9 +416,19 @@ async function processOneQueuedItem(rawItem) {
       noteItem = (await getOrCreateReadingNote(parentItem)).noteItem;
     }
 
+    if (clearErrorComment(noteItem)) {
+      await saveChangedItems([noteItem]);
+    }
+
+    const queueState = captureQueueState(rawItem, noteItem);
     const syncAction = await syncNoteToRoot(noteItem);
-    markDone(rawItem, noteItem);
-    await saveChangedItems([rawItem, noteItem]);
+    try {
+      markDone(rawItem, noteItem);
+      await saveChangedItems([rawItem, noteItem]);
+    } catch (stateError) {
+      restoreQueueState(rawItem, noteItem, queueState);
+      throw new Error(`sync_succeeded_state_save_failed: ${stateError?.message || stateError}`);
+    }
     return { ok: true, action: syncAction, noteKey: noteItem.key };
   } catch (e) {
     Zotero.debug("[Codex BN Queue] Failed item " + (rawItem.key || rawItem.id) + ": " + e);
