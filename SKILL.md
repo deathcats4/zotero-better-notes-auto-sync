@@ -30,14 +30,14 @@ When installing or repairing the Zotero-side bridge, read `references/actions-ta
    - Manual selected action: `scripts/actions-tags-bn-autosync-selected.js`.
    - Lightweight automatic queue: `scripts/actions-tags-bn-queue-daemon.js`.
 3. Edit each JS script's constants before installing:
+   - `PROJECT_ID`
    - `ROOT_DIR`
    - optional `TEMPLATE_NAME`
-   - queue/sync tags only if the project needs custom names.
+   - optional `LIBRARY_IDS` in the daemon for group libraries or multiple libraries.
 4. Install the script through Actions & Tags, or edit Zotero `prefs.js` only when Zotero is closed and after backing it up.
-5. Keep Better Notes auto-sync enabled:
-   - `extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes = true`
+5. Ask the user to manually confirm Better Notes linked-note auto-sync is enabled. Do not silently set `extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes` from a script.
 
-Prefer the queue daemon for hands-off Codex workflows. It runs on `mainWindowLoad`, scans `Codex/Queue/BN-Sync`, calls Better Notes, removes the queue tag, and adds `Codex/BN-Synced`.
+Prefer the queue daemon for hands-off Codex workflows. It runs on `mainWindowLoad`, searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, calls Better Notes one note at a time, removes the queue tag only after sync verification, and adds `Codex/BN-Synced/<PROJECT_ID>` only on verified success.
 
 ## Processing workflow
 
@@ -45,7 +45,7 @@ For one paper or a small batch:
 
 1. Resolve the Zotero source from a collection, title, or key.
 2. Fetch metadata, existing child notes, annotations, and local PDF/full text where available.
-3. Reuse an existing Codex/Better Notes reading note if one exists; otherwise create one child note under the parent item.
+3. Reuse an existing project-scoped Codex/Better Notes reading note if one exists; otherwise create one child note under the parent item.
 4. Write a concise reading card in the Zotero note:
    - metadata
    - one-sentence positioning
@@ -55,18 +55,27 @@ For one paper or a small batch:
    - candidate evidence table
    - review limitations and next checks
 5. Keep automatically generated claims at `review/needs-review`.
-6. Add `Codex/Queue/BN-Sync` to the note or parent item.
+6. Add `Codex/Queue/BN-Sync/<PROJECT_ID>` to the note or parent item.
 7. Let the Zotero-side queue daemon register it with Better Notes.
-8. Verify the queue tag disappeared, `Codex/BN-Synced` appeared, and an `.md` exists in `ROOT_DIR`.
+8. Verify the queue tag disappeared, `Codex/BN-Synced/<PROJECT_ID>` appeared, no error tag remains, and Better Notes sync status points to `ROOT_DIR`.
 
 Use `scripts/queue_zotero_items.py` when Codex only needs to add queue tags:
 
 ```bash
-python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY
-python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5
+python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id PROJECT_ID
+python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id PROJECT_ID
 ```
 
-The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, and `ZOTERO_API_KEY` from the environment.
+The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, `ZOTERO_API_KEY`, and optionally `ZOTERO_BN_PROJECT_ID` from the environment.
+
+## State rules
+
+- Add `Codex/BN-Synced/<PROJECT_ID>` only after `syncMDBatch` succeeds and `getSyncStatus(noteID).path` is under `ROOT_DIR`.
+- On failure, keep `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve error details in the note comment if a note exists.
+- Do not use `isSyncNote(noteID)` alone as proof of success; it does not prove the note is synced to this project's `ROOT_DIR`.
+- Process queued notes one at a time so one bad note does not block the rest of the batch.
+- Avoid Actions & Tags duplicate multi-select execution by ignoring per-item callbacks when both `items` and `item` are injected.
+- Do not silently mutate global Better Notes preferences.
 
 ## Writing rules
 
@@ -83,11 +92,15 @@ Do not promote a generated note into formal evidence, claims, or manuscript text
 After processing, check:
 
 - The Zotero child note exists under the correct parent title.
-- The note has `Codex/BN-Synced`.
-- The note no longer has `Codex/Queue/BN-Sync`.
+- The note has `Codex/BN-Synced/<PROJECT_ID>`.
+- The note no longer has `Codex/Queue/BN-Sync/<PROJECT_ID>`.
+- The note does not have `Codex/BN-Sync-Error/<PROJECT_ID>`.
+- Better Notes `getSyncStatus(noteID).path` is under `ROOT_DIR`.
 - The Obsidian Markdown exists under `ROOT_DIR`.
 - The Markdown YAML contains `$itemKey` for the Zotero note key.
 - The first visible heading matches the paper/note title.
+
+Do not treat the success tag alone as sufficient verification.
 
 If anything fails, read `references/troubleshooting.md`.
 
@@ -95,6 +108,7 @@ If anything fails, read `references/troubleshooting.md`.
 
 - `scripts/actions-tags-bn-autosync-selected.js`: manual selected item/note sync action.
 - `scripts/actions-tags-bn-queue-daemon.js`: automatic queue consumer for Zotero startup.
-- `scripts/queue_zotero_items.py`: pyzotero helper to add queue tags.
+- `scripts/queue_zotero_items.py`: pyzotero helper to add project-scoped queue tags.
 - `references/actions-tags-setup.md`: install and configuration details.
 - `references/troubleshooting.md`: common failure modes and fixes.
+- `COMPATIBILITY.md`: locally verified Zotero/plugin/pyzotero versions and API assumptions.

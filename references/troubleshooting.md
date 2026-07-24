@@ -39,19 +39,64 @@ Possible causes:
 
 - Zotero desktop has not synced the pyzotero change yet.
 - The daemon action is not installed with `event = mainWindowLoad`.
+- The queue tag project ID does not match between Python and JS.
 - Better Notes API is unavailable inside Zotero.
 - The queued object is an attachment rather than a regular item or note.
+- The item has `Codex/BN-Sync-Error/<PROJECT_ID>` and is being skipped until the error tag is cleared.
 
 Checks:
 
-- Confirm the item/note has `Codex/Queue/BN-Sync` in Zotero desktop.
+- Confirm the item/note has `Codex/Queue/BN-Sync/<PROJECT_ID>` in Zotero desktop.
+- Confirm the JS script uses the same `PROJECT_ID`.
 - Restart Zotero so `mainWindowLoad` fires.
-- Watch for `Codex/BN-Sync-Error`.
+- Watch for `Codex/BN-Sync-Error/<PROJECT_ID>`.
 - Try the manual selected action on the same note.
+
+## Error tag is present
+
+The daemon leaves the queue tag in place and adds `Codex/BN-Sync-Error/<PROJECT_ID>` when registration fails. This avoids false success and prevents a bad note from blocking the rest of the queue.
+
+Default behavior:
+
+- error-tagged items are skipped on later polling ticks;
+- the note, if available, receives an HTML comment with the most recent error;
+- clear the error tag after fixing the cause to retry.
+
+Common causes:
+
+- `ROOT_DIR` does not exist or is not writable.
+- Better Notes failed to convert the note to Markdown.
+- The note was already linked to a different root and Better Notes did not update the sync status.
+- Better Notes auto-sync is disabled globally.
+
+## Markdown exists but is in the wrong project folder
+
+Cause: the note may already be a Better Notes sync note for another project/root.
+
+Fix:
+
+1. Use a project-specific `PROJECT_ID`.
+2. Confirm the note has `Codex/BN-Synced/<PROJECT_ID>`, not a generic success tag.
+3. Confirm `getSyncStatus(noteID).path` equals or is under the configured `ROOT_DIR`.
+4. Re-run the manual action; the script attempts to re-register notes whose sync status points to a different root.
 
 ## Markdown exists but does not update immediately
 
 Better Notes uses its own sync period, commonly `syncPeriodSeconds = 30`. For testing, a project can lower it to 5-10 seconds. Avoid 1 second for large note sets.
+
+The scripts do not silently enable Better Notes auto-sync. If auto-sync is disabled, initial export/register may still work, but future bidirectional updates may not run automatically.
+
+## Personal library vs group library
+
+The Python helper can target `user` or `group` libraries through `ZOTERO_LIBRARY_TYPE`.
+
+The Zotero-side daemon defaults to personal library only:
+
+```js
+const LIBRARY_IDS = [];
+```
+
+To process group libraries, set `LIBRARY_IDS` to Zotero internal library IDs. If Python queues a group library item but the daemon scans only the personal library, the queue tag will remain unprocessed.
 
 ## What pyzotero can and cannot do
 

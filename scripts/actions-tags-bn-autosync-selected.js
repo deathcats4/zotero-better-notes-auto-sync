@@ -1,12 +1,12 @@
 /**
- * Codex: create/reuse Better Notes reading notes and register Markdown auto-sync
+ * Codex: create/reuse Better Notes reading notes and register Markdown auto-sync.
  *
  * Actions & Tags setup:
  * - Operation: Custom script / 自定义脚本
  * - Menu label: Codex: BN auto-sync selected to Obsidian
  * - Item menu: enabled
  *
- * Tested against local plugin surfaces:
+ * Tested plugin surfaces:
  * - Actions & Tags injects `item`, `items`, and `collection`.
  * - Better Notes exposes:
  *   Zotero.BetterNotes.api.template.runItemTemplate
@@ -18,11 +18,17 @@
 
 // Edit these before pasting the script into Actions & Tags.
 // Use Windows native backslashes, not D:/forward/slashes.
+const PROJECT_ID = "PROJECT_NAME";
 const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\PROJECT_NAME";
 const TEMPLATE_NAME = ""; // Optional Better Notes item template name, e.g. "[item]Project Reading Card".
-const SYNC_TAG = "Codex/BN-Synced";
+
+// Project-scoped status tags avoid collisions between multiple vaults/projects.
+const QUEUE_TAG = `Codex/Queue/BN-Sync/${PROJECT_ID}`;
+const SYNC_TAG = `Codex/BN-Synced/${PROJECT_ID}`;
+const ERROR_TAG = `Codex/BN-Sync-Error/${PROJECT_ID}`;
 const REVIEW_TAG = "review/needs-review";
-const CODEX_MARKER_PREFIX = "codex-bn-sync:";
+const CODEX_MARKER_PREFIX = `codex-bn-sync:${PROJECT_ID}:`;
+const ERROR_MARKER_PREFIX = `codex-bn-sync-error:${PROJECT_ID}:`;
 const BN_AUTOSYNC_PREF = "extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes";
 
 function escapeHTML(value) {
@@ -31,6 +37,18 @@ function escapeHTML(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeComment(value) {
+  return String(value || "")
+    .replaceAll("--", "—")
+    .replaceAll("<", "‹")
+    .replaceAll(">", "›")
+    .slice(0, 700);
 }
 
 function uniqById(values) {
@@ -45,14 +63,43 @@ function uniqById(values) {
 }
 
 function selectedItemsFromActionContext() {
-  const direct = [];
-  if (Array.isArray(items)) direct.push(...items);
-  if (item) direct.push(item);
-  return uniqById(direct);
+  const hasItemsArray = typeof items !== "undefined" && Array.isArray(items);
+  const hasSingleItem = typeof item !== "undefined" && !!item;
+
+  // Actions & Tags calls once with `items=[all selected]`, then may call again
+  // per selected item as `items=[]; item=<one item>`. Ignore the per-item
+  // callback to avoid duplicate note creation and duplicate sync calls.
+  if (hasItemsArray && hasSingleItem) {
+    return { selected: [], ignoredPerItemCallback: true };
+  }
+
+  const source = hasItemsArray ? items : hasSingleItem ? [item] : [];
+  return { selected: uniqById(source), ignoredPerItemCallback: false };
 }
 
 function hasTag(zoteroItem, tag) {
-  return zoteroItem.getTags().some((t) => t.tag === tag);
+  return zoteroItem?.getTags?.().some((t) => t.tag === tag) || false;
+}
+
+function addTagOnce(zoteroItem, tag) {
+  if (zoteroItem && !hasTag(zoteroItem, tag)) zoteroItem.addTag(tag, 0);
+}
+
+function removeTagIfPresent(zoteroItem, tag) {
+  if (zoteroItem && hasTag(zoteroItem, tag)) zoteroItem.removeTag(tag);
+}
+
+async function saveChangedItems(itemsToSave) {
+  const seen = new Set();
+  for (const changed of itemsToSave || []) {
+    if (!changed || seen.has(changed.id)) continue;
+    seen.add(changed.id);
+    try {
+      await changed.saveTx();
+    } catch (e) {
+      Zotero.debug("[Codex BN Sync] saveTx failed for " + (changed.key || changed.id) + ": " + e);
+    }
+  }
 }
 
 async function ensureDir(path) {
@@ -64,17 +111,79 @@ async function ensureDir(path) {
   await OS.File.makeDir(path, { from: null, ignoreExisting: true });
 }
 
-function enableBetterNotesAutoSyncPref() {
+function checkBetterNotesAutoSyncPref() {
   try {
-    if (Zotero.Prefs.get(BN_AUTOSYNC_PREF, true) !== true) {
-      Zotero.Prefs.set(BN_AUTOSYNC_PREF, true, true);
-      return "enabled";
-    }
-    return "already_enabled";
+    return Zotero.Prefs.get(BN_AUTOSYNC_PREF, true) === true ? "enabled" : "disabled_warning";
   } catch (e) {
-    Zotero.debug("[Codex BN Sync] Could not set Better Notes auto-sync pref: " + e);
-    return "pref_set_failed";
+    Zotero.debug("[Codex BN Sync] Could not read Better Notes auto-sync pref: " + e);
+    return "unknown_warning";
   }
+}
+
+function normalizePath(path) {
+  return String(path || "")
+    .replaceAll("/", "\\")
+    .replace(/\\+$/g, "")
+    .toLowerCase();
+}
+
+function extractStatusPath(status) {
+  if (!status) return "";
+  if (typeof status === "string") return status;
+  for (const key of ["path", "dir", "saveDir", "folder", "folderPath", "mdPath", "filePath"]) {
+    if (status[key]) return String(status[key]);
+  }
+  if (status.sync && typeof status.sync === "object") return extractStatusPath(status.sync);
+  if (status.data && typeof status.data === "object") return extractStatusPath(status.data);
+  return "";
+}
+
+function isPathInRoot(statusPath) {
+  const root = normalizePath(ROOT_DIR);
+  const candidate = normalizePath(statusPath);
+  return candidate === root || candidate.startsWith(root + "\\");
+}
+
+async function getRootSyncState(noteId) {
+  let status = null;
+  let statusPath = "";
+  let isAnySyncNote = false;
+
+  try {
+    status = await Zotero.BetterNotes.api.sync?.getSyncStatus?.(noteId);
+    statusPath = extractStatusPath(status);
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] getSyncStatus failed for noteID=" + noteId + ": " + e);
+  }
+
+  try {
+    isAnySyncNote = !!Zotero.BetterNotes.api.sync?.isSyncNote?.(noteId);
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] isSyncNote failed for noteID=" + noteId + ": " + e);
+  }
+
+  return {
+    isAnySyncNote,
+    statusPath,
+    isCorrectRoot: !!statusPath && isPathInRoot(statusPath),
+  };
+}
+
+async function syncNoteToRoot(noteItem) {
+  await ensureDir(ROOT_DIR);
+
+  const before = await getRootSyncState(noteItem.id);
+  if (before.isCorrectRoot) return "already";
+
+  await Zotero.BetterNotes.api.$export.syncMDBatch(ROOT_DIR, [noteItem.id]);
+
+  const after = await getRootSyncState(noteItem.id);
+  if (!after.isCorrectRoot) {
+    const observed = after.statusPath || "unavailable";
+    throw new Error(`syncMDBatch completed but note ${noteItem.key} is not registered under ROOT_DIR; observed=${observed}`);
+  }
+
+  return before.isAnySyncNote ? "reregistered" : "registered";
 }
 
 function getParentRegularItem(rawItem) {
@@ -160,7 +269,7 @@ async function applyTemplateOrFallback(parentItem, noteItem) {
   const noteAPI = Zotero.BetterNotes?.api?.note;
 
   try {
-    const hasTemplate = !!templateAPI?.getTemplateText?.(TEMPLATE_NAME);
+    const hasTemplate = !!TEMPLATE_NAME && !!templateAPI?.getTemplateText?.(TEMPLATE_NAME);
     if (hasTemplate && templateAPI?.runItemTemplate && noteAPI?.insert) {
       const renderedHTML = await templateAPI.runItemTemplate(TEMPLATE_NAME, {
         itemIds: [parentItem.id],
@@ -168,6 +277,7 @@ async function applyTemplateOrFallback(parentItem, noteItem) {
       });
       if (renderedHTML) {
         await noteAPI.insert(noteItem, renderedHTML, -1);
+        await noteItem.saveTx();
         return "template";
       }
     }
@@ -192,86 +302,117 @@ function findExistingCodexNote(parentItem) {
 async function getOrCreateReadingNote(parentItem) {
   const existing = findExistingCodexNote(parentItem);
   if (existing) {
-    if (!hasTag(existing, SYNC_TAG)) existing.addTag(SYNC_TAG, 0);
-    if (!hasTag(existing, REVIEW_TAG)) existing.addTag(REVIEW_TAG, 0);
-    await existing.saveTx();
+    addTagOnce(existing, REVIEW_TAG);
     return { noteItem: existing, created: false, contentSource: "existing" };
   }
 
   const noteItem = new Zotero.Item("note");
   noteItem.libraryID = parentItem.libraryID;
   noteItem.parentID = parentItem.id;
-  noteItem.addTag(SYNC_TAG, 0);
-  noteItem.addTag(REVIEW_TAG, 0);
+  addTagOnce(noteItem, REVIEW_TAG);
   await noteItem.saveTx();
 
   const contentSource = await applyTemplateOrFallback(parentItem, noteItem);
   return { noteItem, created: true, contentSource };
 }
 
+function replaceErrorComment(noteItem, error) {
+  if (!noteItem?.isNote?.()) return;
+  const html = noteItem.getNote?.() || "";
+  const markerRegex = new RegExp(`<p><!--\\s*${escapeRegExp(ERROR_MARKER_PREFIX)}[\\s\\S]*?--></p>\\s*`, "g");
+  const cleaned = html.replace(markerRegex, "");
+  const message = sanitizeComment(error?.stack || error?.message || error);
+  noteItem.setNote(`${cleaned}\n<p><!-- ${ERROR_MARKER_PREFIX}${new Date().toISOString()} ${message} --></p>`);
+}
+
+function markDone(rawItem, noteItem) {
+  for (const zoteroItem of [rawItem, noteItem]) {
+    if (!zoteroItem) continue;
+    removeTagIfPresent(zoteroItem, QUEUE_TAG);
+    removeTagIfPresent(zoteroItem, ERROR_TAG);
+    addTagOnce(zoteroItem, SYNC_TAG);
+    if (zoteroItem.isNote?.()) addTagOnce(zoteroItem, REVIEW_TAG);
+  }
+}
+
+function markError(rawItem, noteItem, error) {
+  for (const zoteroItem of [rawItem, noteItem]) {
+    if (!zoteroItem) continue;
+    removeTagIfPresent(zoteroItem, SYNC_TAG);
+    addTagOnce(zoteroItem, ERROR_TAG);
+    if (zoteroItem.isNote?.()) addTagOnce(zoteroItem, REVIEW_TAG);
+  }
+  if (noteItem?.isNote?.()) replaceErrorComment(noteItem, error);
+}
+
 if (!Zotero.BetterNotes?.api?.$export?.syncMDBatch) {
   return "[Codex BN Sync] Better Notes API not available. Check Better Notes is installed/enabled.";
 }
 
-const selected = selectedItemsFromActionContext();
+const { selected, ignoredPerItemCallback } = selectedItemsFromActionContext();
+if (ignoredPerItemCallback) {
+  return "[Codex BN Sync] Ignored Actions & Tags per-item callback to avoid duplicate multi-select execution.";
+}
 if (!selected.length) {
   return "[Codex BN Sync] No selected items/notes. Select one or more Zotero items or child notes.";
 }
 
-await ensureDir(ROOT_DIR);
-const autoSyncPrefStatus = enableBetterNotesAutoSyncPref();
+const autoSyncPrefStatus = checkBetterNotesAutoSyncPref();
 
-const targetNotes = [];
 const stats = {
   selected: selected.length,
+  notes: 0,
   created: 0,
   existing: 0,
-  syncedAlready: 0,
-  syncRegistered: 0,
+  registered: 0,
+  reregistered: 0,
+  already: 0,
+  failed: 0,
   skipped: 0,
   template: 0,
   fallback: 0,
 };
+const noteKeys = [];
+const failures = [];
 
 for (const raw of selected) {
+  let noteItem = null;
   try {
     if (raw.isNote && raw.isNote()) {
-      targetNotes.push(raw);
-      continue;
+      noteItem = raw;
+      addTagOnce(noteItem, REVIEW_TAG);
+    } else {
+      const parent = getParentRegularItem(raw);
+      if (!parent) {
+        stats.skipped += 1;
+        continue;
+      }
+
+      const result = await getOrCreateReadingNote(parent);
+      noteItem = result.noteItem;
+      if (result.created) stats.created += 1;
+      else stats.existing += 1;
+      if (result.contentSource === "template") stats.template += 1;
+      if (result.contentSource === "fallback") stats.fallback += 1;
     }
 
-    const parent = getParentRegularItem(raw);
-    if (!parent) {
-      stats.skipped += 1;
-      continue;
-    }
+    const syncAction = await syncNoteToRoot(noteItem);
+    if (syncAction === "already") stats.already += 1;
+    if (syncAction === "registered") stats.registered += 1;
+    if (syncAction === "reregistered") stats.reregistered += 1;
 
-    const { noteItem, created, contentSource } = await getOrCreateReadingNote(parent);
-    targetNotes.push(noteItem);
-    if (created) stats.created += 1;
-    else stats.existing += 1;
-    if (contentSource === "template") stats.template += 1;
-    if (contentSource === "fallback") stats.fallback += 1;
+    markDone(raw, noteItem);
+    await saveChangedItems([raw, noteItem]);
+    stats.notes += 1;
+    noteKeys.push(noteItem.key);
   } catch (e) {
     Zotero.debug("[Codex BN Sync] Failed on selected item " + (raw?.key || raw?.id) + ": " + e);
-    stats.skipped += 1;
+    markError(raw, noteItem, e);
+    await saveChangedItems([raw, noteItem]);
+    stats.failed += 1;
+    failures.push(`${raw?.key || raw?.id}: ${String(e?.message || e).slice(0, 160)}`);
   }
 }
 
-const uniqueNotes = uniqById(targetNotes);
-const toRegister = [];
-for (const noteItem of uniqueNotes) {
-  if (Zotero.BetterNotes.api.sync?.isSyncNote?.(noteItem.id)) {
-    stats.syncedAlready += 1;
-  } else {
-    toRegister.push(noteItem.id);
-  }
-}
-
-if (toRegister.length) {
-  await Zotero.BetterNotes.api.$export.syncMDBatch(ROOT_DIR, toRegister);
-  stats.syncRegistered = toRegister.length;
-}
-
-const noteKeys = uniqueNotes.map((n) => n.key).join(", ");
-return `[Codex BN Sync] Done. selected=${stats.selected}; notes=${uniqueNotes.length}; created=${stats.created}; existing=${stats.existing}; registered=${stats.syncRegistered}; alreadySynced=${stats.syncedAlready}; template=${stats.template}; fallback=${stats.fallback}; skipped=${stats.skipped}; autoSyncPref=${autoSyncPrefStatus}; root=${ROOT_DIR}; noteKeys=${noteKeys}`;
+const failureText = failures.length ? `; failures=${failures.join(" | ")}` : "";
+return `[Codex BN Sync] Done. selected=${stats.selected}; notes=${stats.notes}; created=${stats.created}; existing=${stats.existing}; registered=${stats.registered}; reregistered=${stats.reregistered}; already=${stats.already}; template=${stats.template}; fallback=${stats.fallback}; skipped=${stats.skipped}; failed=${stats.failed}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}; noteKeys=${noteKeys.join(", ")}${failureText}`;
