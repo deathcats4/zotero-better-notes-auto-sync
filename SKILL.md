@@ -37,7 +37,7 @@ When installing or repairing the Zotero-side bridge, read `references/actions-ta
 4. Install the script through Actions & Tags, or edit Zotero `prefs.js` only when Zotero is closed and after backing it up.
 5. Ask the user to manually confirm Better Notes linked-note auto-sync is enabled. Do not silently set `extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes` from a script.
 
-Prefer the queue daemon for hands-off Codex workflows. It runs on `mainWindowLoad`, searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, calls Better Notes one note at a time, removes the queue tag only after sync verification, and adds `Codex/BN-Synced/<PROJECT_ID>` only on verified success.
+Prefer the queue daemon for hands-off Codex workflows. It runs on `mainWindowLoad`, searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, calls Better Notes one note at a time, removes the queue tag only after sync verification, and adds `Codex/BN-Synced/<PROJECT_ID>` only on verified success. Daemon timer and busy state are keyed by `PROJECT_ID`, so multiple projects can stay resident at the same time.
 
 ## Processing workflow
 
@@ -70,8 +70,11 @@ The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, `ZOTERO_API_KEY`, a
 
 ## State rules
 
+- Add or preserve `Codex/BN-Note/<PROJECT_ID>` on any project-owned note so template failures and retry flows can reuse the same note.
 - Add `Codex/BN-Synced/<PROJECT_ID>` only after `syncMDBatch` succeeds and `getSyncStatus(noteID).path` is under `ROOT_DIR`.
-- On failure, keep `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve error details in the note comment if a note exists.
+- On explicit queue/manual sync, call `syncMDBatch` even when the note is already registered under `ROOT_DIR`; this refreshes missing/stale Markdown when auto-sync is disabled or the file was deleted.
+- On failure, keep `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve `error.message` in the note comment if a note exists.
+- On success, remove stale project error comments from the note.
 - Do not use `isSyncNote(noteID)` alone as proof of success; it does not prove the note is synced to this project's `ROOT_DIR`.
 - Process queued notes one at a time so one bad note does not block the rest of the batch.
 - Avoid Actions & Tags duplicate multi-select execution by ignoring per-item callbacks when both `items` and `item` are injected.
@@ -92,6 +95,7 @@ Do not promote a generated note into formal evidence, claims, or manuscript text
 After processing, check:
 
 - The Zotero child note exists under the correct parent title.
+- The note has `Codex/BN-Note/<PROJECT_ID>`.
 - The note has `Codex/BN-Synced/<PROJECT_ID>`.
 - The note no longer has `Codex/Queue/BN-Sync/<PROJECT_ID>`.
 - The note does not have `Codex/BN-Sync-Error/<PROJECT_ID>`.

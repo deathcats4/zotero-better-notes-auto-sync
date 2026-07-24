@@ -59,8 +59,9 @@ The daemon leaves the queue tag in place and adds `Codex/BN-Sync-Error/<PROJECT_
 Default behavior:
 
 - error-tagged items are skipped on later polling ticks;
-- the note, if available, receives an HTML comment with the most recent error;
+- the note, if available, receives an HTML comment with the most recent `error.message`;
 - clear the error tag after fixing the cause to retry.
+- a later successful retry removes the project error marker from the note.
 
 Common causes:
 
@@ -76,9 +77,20 @@ Cause: the note may already be a Better Notes sync note for another project/root
 Fix:
 
 1. Use a project-specific `PROJECT_ID`.
-2. Confirm the note has `Codex/BN-Synced/<PROJECT_ID>`, not a generic success tag.
+2. Confirm the note has `Codex/BN-Note/<PROJECT_ID>` and `Codex/BN-Synced/<PROJECT_ID>`, not a generic success tag.
 3. Confirm `getSyncStatus(noteID).path` equals or is under the configured `ROOT_DIR`.
 4. Re-run the manual action; the script attempts to re-register notes whose sync status points to a different root.
+
+## Template note keeps duplicating after sync errors
+
+The current scripts add `Codex/BN-Note/<PROJECT_ID>` before the first save and also append a project marker after template insertion. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `NOTE_TAG`.
+
+Fix:
+
+1. Update the installed Actions & Tags script from this repository.
+2. Keep one intended child note.
+3. Add `Codex/BN-Note/<PROJECT_ID>` to that note.
+4. Remove duplicate generated notes after confirming they are not needed.
 
 ## Markdown exists but does not update immediately
 

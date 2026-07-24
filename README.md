@@ -15,7 +15,7 @@
 
 ## 当前定位
 
-这个项目适合小规模个人工作流、项目级文献阅读卡、以及 Zotero/Obsidian 自动化实验。它已经避免了“同步失败但提前贴成功标签”和“一个坏 note 阻塞整批任务”这类高风险状态机问题。
+这个项目适合小规模个人工作流、项目级文献阅读卡、以及 Zotero/Obsidian 自动化实验。它已经避免了“同步失败但提前贴成功标签”“一个坏 note 阻塞整批任务”和“模板失败后重复建 note”这类高风险状态机问题。
 
 但它仍然不是无人值守的大型 Zotero 基础设施。长期、大库、多项目、多用户场景更适合做成专门的 Zotero bridge plugin，通过 Zotero notifier 事件驱动，而不是依赖 Actions & Tags 轮询脚本。
 
@@ -120,20 +120,23 @@ python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold
 python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id axi-gold
 ```
 
-Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Better Notes。成功后：
+Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Better Notes。显式排队会始终执行一次 `syncMDBatch()`，即使该 note 已登记在当前 `ROOT_DIR` 下也会刷新导出。成功后：
 
 - 移除 `Codex/Queue/BN-Sync/PROJECT_ID`
 - 移除 `Codex/BN-Sync-Error/PROJECT_ID`
+- 添加或保留 `Codex/BN-Note/PROJECT_ID`
 - 添加 `Codex/BN-Synced/PROJECT_ID`
+- 清除旧的错误 HTML marker
 - 验证 Better Notes sync status 的 path 位于 `ROOT_DIR`
 - 在 `ROOT_DIR` 下创建或更新 Better Notes 管理的 Markdown 文件
 
 失败时：
 
 - 保留 `Codex/Queue/BN-Sync/PROJECT_ID`
+- 添加或保留 `Codex/BN-Note/PROJECT_ID`
 - 添加 `Codex/BN-Sync-Error/PROJECT_ID`
 - 移除 `Codex/BN-Synced/PROJECT_ID`
-- 在 note 中写入一条 HTML comment 形式的错误 marker
+- 在 note 中写入一条 HTML comment 形式的错误 marker，只记录 `error.message`，避免把本地 stack/path 同步进 Zotero 云端或 Markdown
 - 默认跳过 error-tagged item，直到你清除错误标签后重试
 
 ## 重要限制
@@ -143,12 +146,14 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Bette
 - Better Notes 的自动同步不是实时文件监听，通常按周期同步；默认可能是约 30 秒。
 - 真正的双向同步由 Better Notes 管理，本项目只负责把 Codex 生成的 Zotero note 注册进 Better Notes 同步体系。
 - queue daemon 使用 Zotero tag search 查找队列标签，并默认每 30 秒处理最多 8 条；这比全库扫描轻，但仍不是大型库的最佳长期方案。
+- 多个项目 daemon 可以同时常驻；timer 和 busy lock 按 `PROJECT_ID` 隔离。
 
 ## 验证
 
 处理一篇文献后检查：
 
 - Zotero item 下存在目标 child note。
+- note 有 `Codex/BN-Note/PROJECT_ID` 标签。
 - note 有 `Codex/BN-Synced/PROJECT_ID` 标签。
 - note 没有 `Codex/Queue/BN-Sync/PROJECT_ID` 标签。
 - note 没有 `Codex/BN-Sync-Error/PROJECT_ID` 标签。

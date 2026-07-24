@@ -27,6 +27,7 @@ const TEMPLATE_NAME = ""; // Optional Better Notes item template name, e.g. "[it
 const LIBRARY_IDS = [];
 
 const QUEUE_TAG = `Codex/Queue/BN-Sync/${PROJECT_ID}`;
+const NOTE_TAG = `Codex/BN-Note/${PROJECT_ID}`;
 const SYNC_TAG = `Codex/BN-Synced/${PROJECT_ID}`;
 const ERROR_TAG = `Codex/BN-Sync-Error/${PROJECT_ID}`;
 const REVIEW_TAG = "review/needs-review";
@@ -36,6 +37,7 @@ const BN_AUTOSYNC_PREF = "extensions.zotero.Knowledge4Zotero.sync.autoSyncLinked
 const POLL_SECONDS = 30;
 const MAX_PER_TICK = 8;
 const SKIP_ERROR_TAGGED_ITEMS = true;
+const DAEMON_KEY = `codexBNQueue:${PROJECT_ID}`;
 
 function escapeHTML(value) {
   return String(value || "")
@@ -71,6 +73,7 @@ function removeTagIfPresent(zoteroItem, tag) {
 
 async function saveChangedItems(itemsToSave) {
   const seen = new Set();
+  const failures = [];
   for (const changed of itemsToSave || []) {
     if (!changed || seen.has(changed.id)) continue;
     seen.add(changed.id);
@@ -78,7 +81,11 @@ async function saveChangedItems(itemsToSave) {
       await changed.saveTx();
     } catch (e) {
       Zotero.debug("[Codex BN Queue] saveTx failed for " + (changed.key || changed.id) + ": " + e);
+      failures.push(`${changed.key || changed.id}: ${e?.message || e}`);
     }
+  }
+  if (failures.length) {
+    throw new Error(`state_save_failed: ${failures.join("; ")}`);
   }
 }
 
@@ -157,7 +164,6 @@ async function syncNoteToRoot(noteItem) {
   await ensureDir(ROOT_DIR);
 
   const before = await getRootSyncState(noteItem.id);
-  if (before.isCorrectRoot) return "already";
 
   await Zotero.BetterNotes.api.$export.syncMDBatch(ROOT_DIR, [noteItem.id]);
 
@@ -167,6 +173,7 @@ async function syncNoteToRoot(noteItem) {
     throw new Error(`syncMDBatch completed but note ${noteItem.key} is not registered under ROOT_DIR; observed=${observed}`);
   }
 
+  if (before.isCorrectRoot) return "refreshed";
   return before.isAnySyncNote ? "reregistered" : "registered";
 }
 
@@ -226,6 +233,22 @@ function buildFallbackHTML(parentItem) {
 `;
 }
 
+function ensureProjectMarker(noteItem, parentKey) {
+  if (!noteItem?.isNote?.()) return;
+  const marker = `${CODEX_MARKER_PREFIX}${parentKey}`;
+  const html = noteItem.getNote?.() || "";
+  if (html.includes(marker)) return;
+  noteItem.setNote(`${html}\n<p><!-- ${marker} --></p>`);
+}
+
+function clearErrorComment(noteItem) {
+  if (!noteItem?.isNote?.()) return;
+  const html = noteItem.getNote?.() || "";
+  const markerRegex = new RegExp(`<p><!--\\s*${escapeRegExp(ERROR_MARKER_PREFIX)}[\\s\\S]*?--></p>\\s*`, "g");
+  const cleaned = html.replace(markerRegex, "");
+  if (cleaned !== html) noteItem.setNote(cleaned);
+}
+
 async function applyTemplateOrFallback(parentItem, noteItem) {
   const templateAPI = Zotero.BetterNotes?.api?.template;
   const noteAPI = Zotero.BetterNotes?.api?.note;
@@ -239,6 +262,9 @@ async function applyTemplateOrFallback(parentItem, noteItem) {
       });
       if (renderedHTML) {
         await noteAPI.insert(noteItem, renderedHTML, -1);
+        if (!renderedHTML.includes(`${CODEX_MARKER_PREFIX}${parentItem.key}`)) {
+          await noteAPI.insert(noteItem, `<p><!-- ${CODEX_MARKER_PREFIX}${parentItem.key} --></p>`, -1);
+        }
         await noteItem.saveTx();
         return "template";
       }
@@ -248,6 +274,7 @@ async function applyTemplateOrFallback(parentItem, noteItem) {
   }
 
   noteItem.setNote(buildFallbackHTML(parentItem));
+  ensureProjectMarker(noteItem, parentItem.key);
   await noteItem.saveTx();
   return "fallback";
 }
@@ -257,13 +284,19 @@ function findExistingCodexNote(parentItem) {
   const noteItems = Zotero.Items.get(noteIDs || []);
   return noteItems.find((noteItem) => {
     const noteHTML = noteItem.getNote?.() || "";
-    return hasTag(noteItem, SYNC_TAG) || noteHTML.includes(`${CODEX_MARKER_PREFIX}${parentItem.key}`);
+    return (
+      hasTag(noteItem, NOTE_TAG) ||
+      hasTag(noteItem, SYNC_TAG) ||
+      hasTag(noteItem, ERROR_TAG) ||
+      noteHTML.includes(`${CODEX_MARKER_PREFIX}${parentItem.key}`)
+    );
   });
 }
 
 async function getOrCreateReadingNote(parentItem) {
   const existing = findExistingCodexNote(parentItem);
   if (existing) {
+    addTagOnce(existing, NOTE_TAG);
     addTagOnce(existing, REVIEW_TAG);
     return { noteItem: existing, created: false, contentSource: "existing" };
   }
@@ -271,6 +304,7 @@ async function getOrCreateReadingNote(parentItem) {
   const noteItem = new Zotero.Item("note");
   noteItem.libraryID = parentItem.libraryID;
   noteItem.parentID = parentItem.id;
+  addTagOnce(noteItem, NOTE_TAG);
   addTagOnce(noteItem, REVIEW_TAG);
   await noteItem.saveTx();
   const contentSource = await applyTemplateOrFallback(parentItem, noteItem);
@@ -282,7 +316,7 @@ function replaceErrorComment(noteItem, error) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p><!--\\s*${escapeRegExp(ERROR_MARKER_PREFIX)}[\\s\\S]*?--></p>\\s*`, "g");
   const cleaned = html.replace(markerRegex, "");
-  const message = sanitizeComment(error?.stack || error?.message || error);
+  const message = sanitizeComment(error?.message || error);
   noteItem.setNote(`${cleaned}\n<p><!-- ${ERROR_MARKER_PREFIX}${new Date().toISOString()} ${message} --></p>`);
 }
 
@@ -292,7 +326,11 @@ function markDone(rawItem, noteItem) {
     removeTagIfPresent(zoteroItem, QUEUE_TAG);
     removeTagIfPresent(zoteroItem, ERROR_TAG);
     addTagOnce(zoteroItem, SYNC_TAG);
-    if (zoteroItem.isNote?.()) addTagOnce(zoteroItem, REVIEW_TAG);
+    if (zoteroItem.isNote?.()) {
+      addTagOnce(zoteroItem, NOTE_TAG);
+      addTagOnce(zoteroItem, REVIEW_TAG);
+      clearErrorComment(zoteroItem);
+    }
   }
 }
 
@@ -301,7 +339,10 @@ function markError(rawItem, noteItem, error) {
     if (!zoteroItem) continue;
     removeTagIfPresent(zoteroItem, SYNC_TAG);
     addTagOnce(zoteroItem, ERROR_TAG);
-    if (zoteroItem.isNote?.()) addTagOnce(zoteroItem, REVIEW_TAG);
+    if (zoteroItem.isNote?.()) {
+      addTagOnce(zoteroItem, NOTE_TAG);
+      addTagOnce(zoteroItem, REVIEW_TAG);
+    }
   }
   if (noteItem?.isNote?.()) replaceErrorComment(noteItem, error);
 }
@@ -349,6 +390,7 @@ async function processOneQueuedItem(rawItem) {
   try {
     if (rawItem.isNote && rawItem.isNote()) {
       noteItem = rawItem;
+      addTagOnce(noteItem, NOTE_TAG);
       addTagOnce(noteItem, REVIEW_TAG);
     } else {
       const parentItem = getParentRegularItem(rawItem);
@@ -365,8 +407,31 @@ async function processOneQueuedItem(rawItem) {
   } catch (e) {
     Zotero.debug("[Codex BN Queue] Failed item " + (rawItem.key || rawItem.id) + ": " + e);
     markError(rawItem, noteItem, e);
-    await saveChangedItems([rawItem, noteItem]);
+    try {
+      await saveChangedItems([rawItem, noteItem]);
+    } catch (stateError) {
+      Zotero.debug("[Codex BN Queue] Failed to save error state for " + (rawItem.key || rawItem.id) + ": " + stateError);
+    }
     return { ok: false, error: String(e?.message || e), noteKey: noteItem?.key || "" };
+  }
+}
+
+function ensureDaemonStateContainers() {
+  if (globalThis.__codexBNQueueTimer) {
+    try {
+      clearInterval(globalThis.__codexBNQueueTimer);
+    } catch (e) {
+      Zotero.debug("[Codex BN Queue] Could not clear legacy single-project timer: " + e);
+    }
+    delete globalThis.__codexBNQueueTimer;
+  }
+
+  if (!globalThis.__codexBNQueueTimers || typeof globalThis.__codexBNQueueTimers.has !== "function") {
+    globalThis.__codexBNQueueTimers = new Map();
+  }
+
+  if (!globalThis.__codexBNQueueBusy || typeof globalThis.__codexBNQueueBusy.has !== "function") {
+    globalThis.__codexBNQueueBusy = new Set();
   }
 }
 
@@ -375,34 +440,36 @@ async function processQueueOnce() {
     Zotero.debug("[Codex BN Queue] Better Notes API unavailable.");
     return;
   }
-  if (globalThis.__codexBNQueueBusy) return;
-  globalThis.__codexBNQueueBusy = true;
+  ensureDaemonStateContainers();
+  if (globalThis.__codexBNQueueBusy.has(DAEMON_KEY)) return;
+  globalThis.__codexBNQueueBusy.add(DAEMON_KEY);
 
   try {
     const autoSyncPrefStatus = checkBetterNotesAutoSyncPref();
     const queued = await getQueuedItems();
     if (!queued.length) return;
 
-    const stats = { processed: 0, registered: 0, reregistered: 0, already: 0, failed: 0 };
+    const stats = { processed: 0, registered: 0, reregistered: 0, refreshed: 0, failed: 0 };
     for (const rawItem of queued) {
       const result = await processOneQueuedItem(rawItem);
       stats.processed += 1;
       if (!result.ok) stats.failed += 1;
       if (result.action === "registered") stats.registered += 1;
       if (result.action === "reregistered") stats.reregistered += 1;
-      if (result.action === "already") stats.already += 1;
+      if (result.action === "refreshed") stats.refreshed += 1;
     }
 
     Zotero.debug(
-      `[Codex BN Queue] processed=${stats.processed}; registered=${stats.registered}; reregistered=${stats.reregistered}; already=${stats.already}; failed=${stats.failed}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
+      `[Codex BN Queue] processed=${stats.processed}; registered=${stats.registered}; reregistered=${stats.reregistered}; refreshed=${stats.refreshed}; failed=${stats.failed}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
     );
   } finally {
-    globalThis.__codexBNQueueBusy = false;
+    globalThis.__codexBNQueueBusy.delete(DAEMON_KEY);
   }
 }
 
-if (!globalThis.__codexBNQueueTimer) {
-  globalThis.__codexBNQueueTimer = setInterval(processQueueOnce, POLL_SECONDS * 1000);
+ensureDaemonStateContainers();
+if (!globalThis.__codexBNQueueTimers.has(DAEMON_KEY)) {
+  globalThis.__codexBNQueueTimers.set(DAEMON_KEY, setInterval(processQueueOnce, POLL_SECONDS * 1000));
   Zotero.debug(`[Codex BN Queue] daemon started, interval=${POLL_SECONDS}s; project=${PROJECT_ID}`);
 }
 
