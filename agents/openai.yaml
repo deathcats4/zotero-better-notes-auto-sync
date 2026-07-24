@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zotero Better Notes Sync"
+  short_description: "Zotero notes to Obsidian via Better Notes"
+  default_prompt: "Use $zotero-better-notes-obsidian-sync to set up a Zotero Better Notes auto-sync workflow into Obsidian."
