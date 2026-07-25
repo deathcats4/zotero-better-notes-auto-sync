@@ -38,17 +38,29 @@ def assert_order(source: str, first: str, second: str, label: str) -> None:
 
 def check_common(source: str, label: str, restore_call: str, mark_error_call: str) -> None:
     assert_contains(source, "const NOTE_TAG = `Codex/BN-Note/${PROJECT_ID}`;", label)
+    assert_contains(source, "const INITIALIZING_TAG = `Codex/BN-Initializing/${PROJECT_ID}`;", label)
+    assert_contains(source, "const FORCE_EXPORT_EXISTING = false;", label)
+    assert_contains(source, "const RECREATE_MISSING_MARKDOWN = true;", label)
     assert_contains(source, "sync_succeeded_state_save_failed", label)
     assert_contains(source, "function captureQueueState", label)
     assert_contains(source, "function restoreQueueState", label)
+    assert_contains(source, "function redactLocalPaths", label)
+    assert_contains(source, "function extractStatusFilename", label)
+    assert_contains(source, "function statusFullPath", label)
+    assert_contains(source, "function isStatusFileInRoot", label)
+    assert_contains(source, "function pathExists", label)
+    assert_contains(source, 'return "already_linked";', label)
+    assert_contains(source, 'return "recreated_missing_file";', label)
+    assert_order(source, "if (before.isCorrectRoot && before.fileExists && !FORCE_EXPORT_EXISTING)", "await Zotero.BetterNotes.api.$export.syncMDBatch", label)
+    assert_order(source, "statusFilename = extractStatusFilename(status);", "isCorrectRoot: isStatusFileInRoot(status)", label)
     assert_contains(source, "if (clearErrorComment(noteItem))", label)
     assert_order(source, "if (clearErrorComment(noteItem))", "const queueState = captureQueueState", label)
     assert_order(source, "const queueState = captureQueueState", "const syncAction = await syncNoteToRoot(noteItem)", label)
     assert_order(source, restore_call, mark_error_call, label)
     assert_not_contains(source, "error?.stack", label)
     assert_not_contains(source, "Prefs.set", label)
-    assert_not_contains(source, 'return "already"', label)
-    assert_not_contains(source, "already=1", label)
+    assert_not_contains(source, "observed=${observed}", label)
+    assert_not_contains(source, "error.message || error", label)
 
 
 def main() -> int:
@@ -60,6 +72,9 @@ def main() -> int:
     assert_contains(daemon, "const DAEMON_KEY = `codexBNQueue:${PROJECT_ID}`;", "daemon")
     assert_contains(daemon, "globalThis.__codexBNQueueTimers = new Map();", "daemon")
     assert_contains(daemon, "globalThis.__codexBNQueueBusy = new Set();", "daemon")
+    assert_contains(daemon, "clearInterval(globalThis.__codexBNQueueTimers.get(DAEMON_KEY));", "daemon")
+    assert_contains(daemon, "daemon (re)started", "daemon")
+    assert_contains(daemon, "processQueueOnce failed", "daemon")
     assert_not_contains(daemon, "globalThis.__codexBNQueueBusy = true", "daemon")
     print("Static checks passed.")
     return 0

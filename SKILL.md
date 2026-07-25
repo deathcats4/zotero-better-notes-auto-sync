@@ -37,7 +37,7 @@ When installing or repairing the Zotero-side bridge, read `references/actions-ta
 4. Install the script through Actions & Tags, or edit Zotero `prefs.js` only when Zotero is closed and after backing it up.
 5. Ask the user to manually confirm Better Notes linked-note auto-sync is enabled. Do not silently set `extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes` from a script.
 
-Prefer the queue daemon for hands-off Codex workflows. It runs on `mainWindowLoad`, searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, calls Better Notes one note at a time, removes the queue tag only after sync verification, and adds `Codex/BN-Synced/<PROJECT_ID>` only on verified success. Daemon timer and busy state are keyed by `PROJECT_ID`, so multiple projects can stay resident at the same time.
+Prefer the queue daemon for hands-off Codex workflows. It runs on `mainWindowLoad`, searches for `Codex/Queue/BN-Sync/<PROJECT_ID>`, calls Better Notes one note at a time only when registration/export is needed, removes the queue tag only after sync verification, and adds `Codex/BN-Synced/<PROJECT_ID>` only on verified success. Daemon timer and busy state are keyed by `PROJECT_ID`, so multiple projects can stay resident at the same time; re-running the same `PROJECT_ID` daemon clears and replaces the old timer so configuration changes take effect.
 
 ## Processing workflow
 
@@ -57,7 +57,7 @@ For one paper or a small batch:
 5. Keep automatically generated claims at `review/needs-review`.
 6. Add `Codex/Queue/BN-Sync/<PROJECT_ID>` to the note or parent item.
 7. Let the Zotero-side queue daemon register it with Better Notes.
-8. Verify the queue tag disappeared, `Codex/BN-Synced/<PROJECT_ID>` appeared, no error tag remains, and Better Notes sync status points to `ROOT_DIR`.
+8. Verify the queue tag disappeared, `Codex/BN-Synced/<PROJECT_ID>` appeared, no error tag remains, and Better Notes sync status `path + filename` points to an existing Markdown file under `ROOT_DIR`.
 
 Use `scripts/queue_zotero_items.py` when Codex only needs to add queue tags:
 
@@ -70,13 +70,13 @@ The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, `ZOTERO_API_KEY`, a
 
 ## State rules
 
-- Add or preserve `Codex/BN-Note/<PROJECT_ID>` on any project-owned note so template failures and retry flows can reuse the same note.
-- Add `Codex/BN-Synced/<PROJECT_ID>` only after `syncMDBatch` succeeds and `getSyncStatus(noteID).path` is under `ROOT_DIR`.
-- On explicit queue/manual sync, clear stale project error comments and save the note before calling `syncMDBatch`, then call `syncMDBatch` even when the note is already registered under `ROOT_DIR`; this refreshes missing/stale Markdown when auto-sync is disabled or the file was deleted.
-- On failure, keep or restore `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve `error.message` in the note comment if a note exists.
+- Use `Codex/BN-Initializing/<PROJECT_ID>` while a newly created or recovered project note is being populated. Add `Codex/BN-Note/<PROJECT_ID>` only after the note has a marker and minimum reading-card content.
+- Add `Codex/BN-Synced/<PROJECT_ID>` only after Better Notes reports a safe `path + filename` under `ROOT_DIR` and the Markdown file exists.
+- On explicit queue/manual sync, clear stale project error comments and save the note before sync verification. If the note is already registered under `ROOT_DIR` and the Markdown file exists, do not call `syncMDBatch` by default; let Better Notes handle normal bidirectional sync to avoid overwriting Obsidian edits. Re-export only when the Markdown file is missing, the note is registered to another root, or `FORCE_EXPORT_EXISTING = true`.
+- On failure, keep or restore `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve only a redacted short error message in the note comment if a note exists. Detailed local paths belong in `Zotero.debug`, not synced note content.
 - If Markdown sync succeeds but Zotero state save fails, restore the original queue-tag placement and surface `sync_succeeded_state_save_failed`.
 - On success, leave stale project error comments removed before export so Markdown does not receive old error markers.
-- Do not use `isSyncNote(noteID)` alone as proof of success; it does not prove the note is synced to this project's `ROOT_DIR`.
+- Do not use `isSyncNote(noteID)` alone as proof of success; it does not prove the note is synced to this project's `ROOT_DIR`, and it does not validate the Markdown filename.
 - Process queued notes one at a time so one bad note does not block the rest of the batch.
 - Avoid Actions & Tags duplicate multi-select execution by ignoring per-item callbacks when both `items` and `item` are injected.
 - Do not silently mutate global Better Notes preferences.
@@ -100,7 +100,7 @@ After processing, check:
 - The note has `Codex/BN-Synced/<PROJECT_ID>`.
 - The note no longer has `Codex/Queue/BN-Sync/<PROJECT_ID>`.
 - The note does not have `Codex/BN-Sync-Error/<PROJECT_ID>`.
-- Better Notes `getSyncStatus(noteID).path` is under `ROOT_DIR`.
+- Better Notes `getSyncStatus(noteID).path + filename` is under `ROOT_DIR`.
 - The Obsidian Markdown exists under `ROOT_DIR`.
 - The Markdown YAML contains `$itemKey` for the Zotero note key.
 - The first visible heading matches the paper/note title.

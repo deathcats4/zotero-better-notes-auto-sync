@@ -31,6 +31,9 @@ const REVIEW_TAG = "review/needs-review";
 const CODEX_MARKER_PREFIX = `codex-bn-sync:${PROJECT_ID}:`;
 const ERROR_MARKER_PREFIX = `codex-bn-sync-error:${PROJECT_ID}:`;
 const BN_AUTOSYNC_PREF = "extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes";
+const FORCE_EXPORT_EXISTING = false; // Keep false unless you explicitly want Zotero note -> Markdown overwrite.
+const RECREATE_MISSING_MARKDOWN = true; // Safe repair: export only when the linked Markdown file is gone.
+const INITIALIZING_TAG = `Codex/BN-Initializing/${PROJECT_ID}`;
 
 function escapeHTML(value) {
   return String(value || "")
@@ -44,12 +47,27 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function redactLocalPaths(value) {
+  let message = String(value || "");
+  for (const rootVariant of [ROOT_DIR, ROOT_DIR.replaceAll("\\", "/")]) {
+    if (rootVariant) message = message.replaceAll(rootVariant, "<ROOT_DIR>");
+  }
+  return message
+    .replace(/[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^<>"'\s)]+/gi, "<USER_DIR>")
+    .replace(/\/(?:Users|home)\/[^<>"'\s)]+/gi, "<HOME_DIR>")
+    .replace(/[A-Za-z]:[\\/][^<>"'\n\r]*/g, "<PATH>");
+}
+
 function sanitizeComment(value) {
-  return String(value || "")
+  return redactLocalPaths(value)
     .replaceAll("--", "—")
     .replaceAll("<", "‹")
     .replaceAll(">", "›")
     .slice(0, 700);
+}
+
+function shortErrorMessage(error) {
+  return sanitizeComment(error?.message ?? String(error || "unknown_error"));
 }
 
 function uniqById(values) {
@@ -100,7 +118,7 @@ async function saveChangedItems(itemsToSave) {
       await changed.saveTx();
     } catch (e) {
       Zotero.debug("[Codex BN Sync] saveTx failed for " + (changed.key || changed.id) + ": " + e);
-      failures.push(`${changed.key || changed.id}: ${e?.message || e}`);
+      failures.push(`${changed.key || changed.id}: ${shortErrorMessage(e)}`);
     }
   }
   if (failures.length) {
@@ -115,6 +133,20 @@ async function ensureDir(path) {
   }
   const { OS } = ChromeUtils.importESModule("chrome://zotero/content/osfile.mjs");
   await OS.File.makeDir(path, { from: null, ignoreExisting: true });
+}
+
+async function pathExists(path) {
+  if (!path) return false;
+  try {
+    if (typeof IOUtils !== "undefined" && IOUtils.exists) {
+      return await IOUtils.exists(path);
+    }
+    const { OS } = ChromeUtils.importESModule("chrome://zotero/content/osfile.mjs");
+    return await OS.File.exists(path);
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] Could not check Markdown path existence: " + shortErrorMessage(e));
+    return false;
+  }
 }
 
 function checkBetterNotesAutoSyncPref() {
@@ -133,15 +165,23 @@ function normalizePath(path) {
     .toLowerCase();
 }
 
-function extractStatusPath(status) {
+function extractStatusField(status, keys) {
   if (!status) return "";
-  if (typeof status === "string") return status;
-  for (const key of ["path", "dir", "saveDir", "folder", "folderPath", "mdPath", "filePath"]) {
+  if (typeof status === "string") return keys.includes("path") ? status : "";
+  for (const key of keys) {
     if (status[key]) return String(status[key]);
   }
-  if (status.sync && typeof status.sync === "object") return extractStatusPath(status.sync);
-  if (status.data && typeof status.data === "object") return extractStatusPath(status.data);
+  if (status.sync && typeof status.sync === "object") return extractStatusField(status.sync, keys);
+  if (status.data && typeof status.data === "object") return extractStatusField(status.data, keys);
   return "";
+}
+
+function extractStatusPath(status) {
+  return extractStatusField(status, ["path", "dir", "saveDir", "folder", "folderPath", "mdPath", "filePath"]);
+}
+
+function extractStatusFilename(status) {
+  return extractStatusField(status, ["filename", "fileName", "name", "mdFilename", "mdName"]);
 }
 
 function isPathInRoot(statusPath) {
@@ -150,14 +190,47 @@ function isPathInRoot(statusPath) {
   return candidate === root || candidate.startsWith(root + "\\");
 }
 
+function hasUnsafeFilename(filename) {
+  const value = String(filename || "");
+  return (
+    !value ||
+    value.includes("..") ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    /^[A-Za-z]:/.test(value) ||
+    value.startsWith(".")
+  );
+}
+
+function joinPath(dir, filename) {
+  return String(dir || "").replaceAll("/", "\\").replace(/\\+$/g, "") + "\\" + filename;
+}
+
+function statusFullPath(status) {
+  const statusPath = extractStatusPath(status);
+  const filename = extractStatusFilename(status);
+  if (!statusPath || hasUnsafeFilename(filename)) return "";
+  return joinPath(statusPath, filename);
+}
+
+function isStatusFileInRoot(status) {
+  const statusPath = extractStatusPath(status);
+  const fullPath = statusFullPath(status);
+  return !!statusPath && !!fullPath && isPathInRoot(statusPath) && isPathInRoot(fullPath);
+}
+
 async function getRootSyncState(noteId) {
   let status = null;
   let statusPath = "";
+  let statusFilename = "";
+  let fullPath = "";
   let isAnySyncNote = false;
 
   try {
     status = await Zotero.BetterNotes.api.sync?.getSyncStatus?.(noteId);
     statusPath = extractStatusPath(status);
+    statusFilename = extractStatusFilename(status);
+    fullPath = statusFullPath(status);
   } catch (e) {
     Zotero.debug("[Codex BN Sync] getSyncStatus failed for noteID=" + noteId + ": " + e);
   }
@@ -171,7 +244,10 @@ async function getRootSyncState(noteId) {
   return {
     isAnySyncNote,
     statusPath,
-    isCorrectRoot: !!statusPath && isPathInRoot(statusPath),
+    statusFilename,
+    fullPath,
+    fileExists: await pathExists(fullPath),
+    isCorrectRoot: isStatusFileInRoot(status),
   };
 }
 
@@ -179,16 +255,30 @@ async function syncNoteToRoot(noteItem) {
   await ensureDir(ROOT_DIR);
 
   const before = await getRootSyncState(noteItem.id);
+  if (before.isCorrectRoot && before.fileExists && !FORCE_EXPORT_EXISTING) {
+    return "already_linked";
+  }
+  if (before.isCorrectRoot && !before.fileExists && !RECREATE_MISSING_MARKDOWN) {
+    return "linked_missing_file";
+  }
+  if (before.isAnySyncNote && !before.isCorrectRoot) {
+    Zotero.debug("[Codex BN Sync] Note " + noteItem.key + " is linked outside this project root; re-registering without deleting the old Markdown copy.");
+  }
 
   await Zotero.BetterNotes.api.$export.syncMDBatch(ROOT_DIR, [noteItem.id]);
 
   const after = await getRootSyncState(noteItem.id);
   if (!after.isCorrectRoot) {
-    const observed = after.statusPath || "unavailable";
-    throw new Error(`syncMDBatch completed but note ${noteItem.key} is not registered under ROOT_DIR; observed=${observed}`);
+    Zotero.debug("[Codex BN Sync] sync status outside ROOT_DIR after export for note " + noteItem.key + ": path=" + redactLocalPaths(after.statusPath) + "; filename=" + after.statusFilename);
+    throw new Error("sync_status_wrong_root");
+  }
+  if (!after.fileExists) {
+    Zotero.debug("[Codex BN Sync] sync status points to missing Markdown after export for note " + noteItem.key + ": " + redactLocalPaths(after.fullPath));
+    throw new Error("sync_file_missing_after_export");
   }
 
-  if (before.isCorrectRoot) return "refreshed";
+  if (before.isCorrectRoot && !before.fileExists) return "recreated_missing_file";
+  if (before.isCorrectRoot && FORCE_EXPORT_EXISTING) return "forced_refreshed";
   return before.isAnySyncNote ? "reregistered" : "registered";
 }
 
@@ -326,6 +416,7 @@ function findExistingCodexNote(parentItem) {
   return noteItems.find((noteItem) => {
     const noteHTML = noteItem.getNote?.() || "";
     return (
+      hasTag(noteItem, INITIALIZING_TAG) ||
       hasTag(noteItem, NOTE_TAG) ||
       hasTag(noteItem, SYNC_TAG) ||
       hasTag(noteItem, ERROR_TAG) ||
@@ -334,22 +425,41 @@ function findExistingCodexNote(parentItem) {
   });
 }
 
+function hasMinimumReadingContent(noteItem, parentKey) {
+  const html = noteItem?.getNote?.() || "";
+  const marker = `${CODEX_MARKER_PREFIX}${parentKey}`;
+  const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return html.includes(marker) && text.length > 40;
+}
+
 async function getOrCreateReadingNote(parentItem) {
   const existing = findExistingCodexNote(parentItem);
   if (existing) {
-    addTagOnce(existing, NOTE_TAG);
     addTagOnce(existing, REVIEW_TAG);
+    if (!hasMinimumReadingContent(existing, parentItem.key)) {
+      addTagOnce(existing, INITIALIZING_TAG);
+      await applyTemplateOrFallback(parentItem, existing);
+      removeTagIfPresent(existing, INITIALIZING_TAG);
+      addTagOnce(existing, NOTE_TAG);
+      await existing.saveTx();
+      return { noteItem: existing, created: false, contentSource: "reinitialized" };
+    }
+    removeTagIfPresent(existing, INITIALIZING_TAG);
+    addTagOnce(existing, NOTE_TAG);
     return { noteItem: existing, created: false, contentSource: "existing" };
   }
 
   const noteItem = new Zotero.Item("note");
   noteItem.libraryID = parentItem.libraryID;
   noteItem.parentID = parentItem.id;
-  addTagOnce(noteItem, NOTE_TAG);
+  addTagOnce(noteItem, INITIALIZING_TAG);
   addTagOnce(noteItem, REVIEW_TAG);
   await noteItem.saveTx();
 
   const contentSource = await applyTemplateOrFallback(parentItem, noteItem);
+  removeTagIfPresent(noteItem, INITIALIZING_TAG);
+  addTagOnce(noteItem, NOTE_TAG);
+  await noteItem.saveTx();
   return { noteItem, created: true, contentSource };
 }
 
@@ -358,7 +468,7 @@ function replaceErrorComment(noteItem, error) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p><!--\\s*${escapeRegExp(ERROR_MARKER_PREFIX)}[\\s\\S]*?--></p>\\s*`, "g");
   const cleaned = html.replace(markerRegex, "");
-  const message = sanitizeComment(error?.message || error);
+  const message = shortErrorMessage(error);
   noteItem.setNote(`${cleaned}\n<p><!-- ${ERROR_MARKER_PREFIX}${new Date().toISOString()} ${message} --></p>`);
 }
 
@@ -420,8 +530,10 @@ const stats = {
   notes: 0,
   created: 0,
   existing: 0,
+  alreadyLinked: 0,
   registered: 0,
   reregistered: 0,
+  recreatedMissing: 0,
   refreshed: 0,
   failed: 0,
   skipped: 0,
@@ -451,6 +563,7 @@ for (const raw of selected) {
       else stats.existing += 1;
       if (result.contentSource === "template") stats.template += 1;
       if (result.contentSource === "fallback") stats.fallback += 1;
+      if (result.contentSource === "reinitialized") stats.fallback += 1;
     }
 
     if (clearErrorComment(noteItem)) {
@@ -464,10 +577,13 @@ for (const raw of selected) {
       await saveChangedItems([raw, noteItem]);
     } catch (stateError) {
       restoreQueueState(raw, noteItem, queueState);
-      throw new Error(`sync_succeeded_state_save_failed: ${stateError?.message || stateError}`);
+      throw new Error(`sync_succeeded_state_save_failed: ${shortErrorMessage(stateError)}`);
     }
 
-    if (syncAction === "refreshed") stats.refreshed += 1;
+    if (syncAction === "already_linked") stats.alreadyLinked += 1;
+    if (syncAction === "linked_missing_file") stats.alreadyLinked += 1;
+    if (syncAction === "forced_refreshed") stats.refreshed += 1;
+    if (syncAction === "recreated_missing_file") stats.recreatedMissing += 1;
     if (syncAction === "registered") stats.registered += 1;
     if (syncAction === "reregistered") stats.reregistered += 1;
     stats.notes += 1;
@@ -481,9 +597,9 @@ for (const raw of selected) {
       Zotero.debug("[Codex BN Sync] Failed to save error state for " + (raw?.key || raw?.id) + ": " + stateError);
     }
     stats.failed += 1;
-    failures.push(`${raw?.key || raw?.id}: ${String(e?.message || e).slice(0, 160)}`);
+    failures.push(`${raw?.key || raw?.id}: ${shortErrorMessage(e).slice(0, 160)}`);
   }
 }
 
 const failureText = failures.length ? `; failures=${failures.join(" | ")}` : "";
-return `[Codex BN Sync] Done. selected=${stats.selected}; notes=${stats.notes}; created=${stats.created}; existing=${stats.existing}; registered=${stats.registered}; reregistered=${stats.reregistered}; refreshed=${stats.refreshed}; template=${stats.template}; fallback=${stats.fallback}; skipped=${stats.skipped}; failed=${stats.failed}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}; noteKeys=${noteKeys.join(", ")}${failureText}`;
+return `[Codex BN Sync] Done. selected=${stats.selected}; notes=${stats.notes}; created=${stats.created}; existing=${stats.existing}; alreadyLinked=${stats.alreadyLinked}; registered=${stats.registered}; reregistered=${stats.reregistered}; recreatedMissing=${stats.recreatedMissing}; refreshed=${stats.refreshed}; template=${stats.template}; fallback=${stats.fallback}; skipped=${stats.skipped}; failed=${stats.failed}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}; noteKeys=${noteKeys.join(", ")}${failureText}`;

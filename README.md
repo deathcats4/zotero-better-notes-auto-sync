@@ -15,7 +15,7 @@
 
 ## 当前定位
 
-这个项目适合小规模个人工作流、项目级文献阅读卡、以及 Zotero/Obsidian 自动化实验。它已经避免了“同步失败但提前贴成功标签”“一个坏 note 阻塞整批任务”和“模板失败后重复建 note”这类高风险状态机问题。
+这个项目适合小规模个人工作流、项目级文献阅读卡、以及 Zotero/Obsidian 自动化实验。它已经避免了“同步失败但提前贴成功标签”“一个坏 note 阻塞整批任务”“模板失败后重复建 note”和“重新排队已同步 note 时默认覆盖 Obsidian Markdown”这类高风险状态机问题。
 
 但它仍然不是无人值守的大型 Zotero 基础设施。长期、大库、多项目、多用户场景更适合做成专门的 Zotero bridge plugin，通过 Zotero notifier 事件驱动，而不是依赖 Actions & Tags 轮询脚本。
 
@@ -70,6 +70,15 @@ const PROJECT_ID = "axi-gold";
 const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\axi-gold";
 const TEMPLATE_NAME = "";
 ```
+
+默认安全开关：
+
+```js
+const FORCE_EXPORT_EXISTING = false;
+const RECREATE_MISSING_MARKDOWN = true;
+```
+
+保持 `FORCE_EXPORT_EXISTING = false` 可以避免重新排队已同步 note 时，把 Zotero note 的旧内容强制覆盖到 Obsidian Markdown。只有你明确要用 Zotero 端覆盖 Markdown 时，才临时改成 `true`。
 
 脚本：
 
@@ -126,14 +135,21 @@ python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold
 python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id axi-gold
 ```
 
-Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Better Notes。显式排队会先清除旧的项目错误 marker 并保存 note，再执行一次 `syncMDBatch()`；即使该 note 已登记在当前 `ROOT_DIR` 下也会刷新导出。成功后：
+Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显式排队会先清除旧的项目错误 marker 并保存 note，然后检查 Better Notes sync status 的 `path + filename`：
+
+- 如果 note 尚未登记到当前 `ROOT_DIR`，脚本调用 `syncMDBatch()` 注册/导出。
+- 如果 note 已登记到当前 `ROOT_DIR` 且 Markdown 文件存在，默认不再调用 `syncMDBatch()`，避免覆盖 Obsidian 端尚未回写到 Zotero 的修改。
+- 如果 note 已登记但 Markdown 文件缺失，默认会重新导出以修复缺失文件。
+- 如果 note 已登记到其他目录，脚本会重新登记到当前目录，但不会自动删除旧目录中的旧 Markdown 副本。
+
+成功后：
 
 - 移除 `Codex/Queue/BN-Sync/PROJECT_ID`
 - 移除 `Codex/BN-Sync-Error/PROJECT_ID`
 - 添加或保留 `Codex/BN-Note/PROJECT_ID`
 - 添加 `Codex/BN-Synced/PROJECT_ID`
 - 旧的错误 HTML marker 已在导出前清除，因此导出的 Markdown 不会携带历史错误 marker
-- 验证 Better Notes sync status 的 path 位于 `ROOT_DIR`
+- 验证 Better Notes sync status 的 `path + filename` 组合后真实文件位于 `ROOT_DIR`
 - 在 `ROOT_DIR` 下创建或更新 Better Notes 管理的 Markdown 文件
 
 失败时：
@@ -142,7 +158,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Bette
 - 添加或保留 `Codex/BN-Note/PROJECT_ID`
 - 添加 `Codex/BN-Sync-Error/PROJECT_ID`
 - 移除 `Codex/BN-Synced/PROJECT_ID`
-- 在 note 中写入一条 HTML comment 形式的错误 marker，只记录 `error.message`，避免把本地 stack/path 同步进 Zotero 云端或 Markdown
+- 在 note 中写入一条 HTML comment 形式的错误 marker，只记录脱敏后的短错误信息；本地目录、用户目录和 stack 只进入 `Zotero.debug`
 - 如果 Markdown 同步已成功但 Zotero 状态保存失败，脚本会恢复原有队列标签并报告 `sync_succeeded_state_save_failed`
 - 默认跳过 error-tagged item，直到你清除错误标签后重试
 
@@ -152,8 +168,9 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Bette
 - 所以必须有一个 Zotero 侧桥：Actions & Tags 脚本，或者将来做成专门的 Zotero bridge plugin。
 - Better Notes 的自动同步不是实时文件监听，通常按周期同步；默认可能是约 30 秒。
 - 真正的双向同步由 Better Notes 管理，本项目只负责把 Codex 生成的 Zotero note 注册进 Better Notes 同步体系。
+- 重新排队已经同步且 Markdown 文件存在的 note 时，默认只确认绑定关系并清理队列标签，不强制刷新导出。这样更适合双向同步；如果要用 Zotero 覆盖 Markdown，需要显式打开 `FORCE_EXPORT_EXISTING`。
 - queue daemon 使用 Zotero tag search 查找队列标签，并默认每 30 秒处理最多 8 条；这比全库扫描轻，但仍不是大型库的最佳长期方案。
-- 多个项目 daemon 可以同时常驻；timer 和 busy lock 按 `PROJECT_ID` 隔离。
+- 多个项目 daemon 可以同时常驻；timer 和 busy lock 按 `PROJECT_ID` 隔离。同一 `PROJECT_ID` 的脚本重新执行时会重载 timer，使新的 `ROOT_DIR` / `POLL_SECONDS` / `LIBRARY_IDS` 生效。
 
 ## 验证
 
@@ -164,7 +181,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 调用 Bette
 - note 有 `Codex/BN-Synced/PROJECT_ID` 标签。
 - note 没有 `Codex/Queue/BN-Sync/PROJECT_ID` 标签。
 - note 没有 `Codex/BN-Sync-Error/PROJECT_ID` 标签。
-- Better Notes `getSyncStatus(noteID).path` 位于 `ROOT_DIR`。
+- Better Notes `getSyncStatus(noteID)` 中的 `path + filename` 组合后位于 `ROOT_DIR`，且文件存在。
 - `ROOT_DIR` 下存在对应 `.md` 文件。
 - Markdown YAML 中包含 `$itemKey`，并对应 Zotero note key。
 

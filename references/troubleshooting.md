@@ -59,9 +59,9 @@ The daemon leaves the queue tag in place and adds `Codex/BN-Sync-Error/<PROJECT_
 Default behavior:
 
 - error-tagged items are skipped on later polling ticks;
-- the note, if available, receives an HTML comment with the most recent `error.message`;
+- the note, if available, receives an HTML comment with a redacted short error message;
 - clear the error tag after fixing the cause to retry.
-- a later successful retry removes the project error marker before export, so the refreshed Markdown does not keep the old error marker.
+- a later successful retry removes the project error marker before sync verification, so Markdown does not keep the old error marker.
 
 Common causes:
 
@@ -90,12 +90,13 @@ Fix:
 
 1. Use a project-specific `PROJECT_ID`.
 2. Confirm the note has `Codex/BN-Note/<PROJECT_ID>` and `Codex/BN-Synced/<PROJECT_ID>`, not a generic success tag.
-3. Confirm `getSyncStatus(noteID).path` equals or is under the configured `ROOT_DIR`.
+3. Confirm `getSyncStatus(noteID).path + filename` resolves to an existing file under the configured `ROOT_DIR`.
 4. Re-run the manual action; the script attempts to re-register notes whose sync status points to a different root.
+5. Review the old Markdown copy in the previous folder. The script does not delete or move it automatically because it may belong to another project.
 
 ## Template note keeps duplicating after sync errors
 
-The current scripts add `Codex/BN-Note/<PROJECT_ID>` before the first save and also append a project marker after template insertion. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `NOTE_TAG`.
+The current scripts use `Codex/BN-Initializing/<PROJECT_ID>` while creating/recovering a note, then switch to `Codex/BN-Note/<PROJECT_ID>` only after content and marker are saved. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `INITIALIZING_TAG`.
 
 Fix:
 
@@ -103,6 +104,16 @@ Fix:
 2. Keep one intended child note.
 3. Add `Codex/BN-Note/<PROJECT_ID>` to that note.
 4. Remove duplicate generated notes after confirming they are not needed.
+
+## Re-queued note does not rewrite Markdown
+
+This is expected for already-linked notes. If `getSyncStatus(noteID).path + filename` points to an existing Markdown file under `ROOT_DIR`, the scripts default to `already_linked` and do not call `syncMDBatch`. This avoids overwriting Obsidian edits that Better Notes has not yet synced back to Zotero.
+
+Use one of these safer options:
+
+1. Wait for Better Notes auto-sync to settle, then check Zotero note content.
+2. Delete or move the stale Markdown file if you want the script to recreate it.
+3. Temporarily set `FORCE_EXPORT_EXISTING = true` only when you intentionally want Zotero note content to overwrite Markdown.
 
 ## Markdown exists but does not update immediately
 

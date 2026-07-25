@@ -14,6 +14,8 @@ The current scripts were reviewed against this local environment:
 | pyzotero | 1.11.0 |
 | OS | Windows |
 
+`requirements.txt` pins `pyzotero>=1.11.0,<1.14.0`: 1.11.0 is the locally verified version, and the upper bound avoids silently installing future incompatible API changes.
+
 ## Better Notes APIs used
 
 The scripts expect these APIs to exist inside the Zotero desktop process:
@@ -40,4 +42,3 @@ The manual script intentionally ignores the per-item callback when both `items` 
 ## Caveat
 
 If Better Notes or Actions & Tags changes these internal APIs, this skill may need updates. For large libraries or long-running unattended automation, a dedicated Zotero bridge plugin with notifier-based processing is a more robust architecture.
-
