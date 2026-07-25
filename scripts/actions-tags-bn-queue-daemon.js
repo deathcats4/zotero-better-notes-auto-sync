@@ -14,6 +14,8 @@
  * - For notes, it syncs the queued note directly.
  * - It preflights Better Notes getMDFileName before syncMDBatch(ROOT_DIR, [noteId]).
  * - It adds SYNC_TAG only after Better Notes reports the note is linked under ROOT_DIR.
+ * - It can also ask Better Notes to resync already-linked project notes, avoiding
+ *   Better Notes' default "only when Zotero is focused / skip active note" timer limits.
  */
 
 // Edit these before pasting the script into Actions & Tags.
@@ -44,8 +46,11 @@ const CODEX_NOTE_TAG_PREFIX = "Codex/BN-Note/";
 const CODEX_ERROR_TAG_PREFIX = "Codex/BN-Sync-Error/";
 const CODEX_INITIALIZING_TAG_PREFIX = "Codex/BN-Initializing/";
 const CODEX_MARKER_PROJECT_RE = /codex-bn-sync:([^:\s<>]+):/g;
-const POLL_SECONDS = 30;
+const POLL_SECONDS = 10;
 const MAX_PER_TICK = 8;
+const ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC = true;
+const LINKED_NOTE_AUTOSYNC_MAX_PER_TICK = 20;
+const ACTIVE_NOTE_SETTLE_SECONDS = 10;
 const SKIP_ERROR_TAGGED_ITEMS = true;
 const DAEMON_KEY = `codexBNQueue:${PROJECT_ID}`;
 
@@ -86,6 +91,19 @@ function shortErrorMessage(error) {
 
 function isTransientLockError(error) {
   return String(error?.message || error || "").includes("codex_bn_lock_busy");
+}
+
+function isElementVisible(el) {
+  if (!el || !el.ownerDocument) return false;
+  try {
+    const rect = el.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const elementAtCenter = el.ownerDocument.elementFromPoint(centerX, centerY);
+    return !!elementAtCenter && el.contains(elementAtCenter);
+  } catch (e) {
+    return false;
+  }
 }
 
 function hasTag(zoteroItem, tag) {
@@ -722,6 +740,140 @@ async function getQueuedItems() {
   return queued;
 }
 
+function ensureLinkedNoteAutosyncState() {
+  if (
+    !globalThis.__codexBNLinkedNoteAutosyncSeen ||
+    typeof globalThis.__codexBNLinkedNoteAutosyncSeen.get !== "function"
+  ) {
+    globalThis.__codexBNLinkedNoteAutosyncSeen = new Map();
+  }
+}
+
+function activeVisibleNoteIds() {
+  try {
+    return new Set(
+      (Zotero.Notes?._editorInstances || [])
+        .filter((editor) => {
+          const elem = editor?._popup?.closest?.("note-editor");
+          return elem && isElementVisible(elem);
+        })
+        .map((editor) => editor?._item?.id)
+        .filter(Boolean),
+    );
+  } catch (e) {
+    Zotero.debug("[Codex BN Queue] Could not inspect active note editors: " + shortErrorMessage(e));
+    return new Set();
+  }
+}
+
+function noteContentDigest(noteItem) {
+  try {
+    return Zotero.Utilities.Internal.md5(noteItem.getNote(), false);
+  } catch (e) {
+    return String(noteItem.version || "") + ":" + String((noteItem.getNote?.() || "").length);
+  }
+}
+
+function activeNoteIsSettled(noteItem, nowMs) {
+  ensureLinkedNoteAutosyncState();
+  const seen = globalThis.__codexBNLinkedNoteAutosyncSeen;
+  const key = `active:${noteItem.libraryID}:${noteItem.id}`;
+  const digest = noteContentDigest(noteItem);
+  const previous = seen.get(key);
+  if (!previous || previous.digest !== digest) {
+    seen.set(key, { digest, firstSeenMs: nowMs });
+    return false;
+  }
+  return nowMs - previous.firstSeenMs >= ACTIVE_NOTE_SETTLE_SECONDS * 1000;
+}
+
+async function syncedProjectNotesFromSearch(libraryID) {
+  const search = new Zotero.Search();
+  search.libraryID = libraryID;
+  search.addCondition("tag", "is", SYNC_TAG);
+  search.addCondition("tag", "is", NOTE_TAG);
+  const ids = await search.search();
+  if (!ids?.length) return [];
+  return Zotero.Items.get(ids).filter((it) => it && !it.deleted && it.isNote?.() && hasTag(it, SYNC_TAG) && hasTag(it, NOTE_TAG));
+}
+
+async function syncedProjectNotesFromFallbackScan(libraryID) {
+  const allItems = await Zotero.Items.getAll(libraryID, false, false, false);
+  return allItems.filter((it) => it && !it.deleted && it.isNote?.() && hasTag(it, SYNC_TAG) && hasTag(it, NOTE_TAG));
+}
+
+async function getProjectLinkedNotesForAutosync() {
+  const libraryIDs = LIBRARY_IDS.length ? LIBRARY_IDS : [Zotero.Libraries.userLibraryID];
+  const activeIds = activeVisibleNoteIds();
+  const notes = [];
+  let skippedActive = 0;
+  let skippedUnsafe = 0;
+  let skippedWrongRoot = 0;
+  const nowMs = Date.now();
+
+  for (const libraryID of libraryIDs) {
+    let libraryNotes = [];
+    try {
+      libraryNotes = await syncedProjectNotesFromSearch(libraryID);
+    } catch (e) {
+      Zotero.debug("[Codex BN Queue] Synced-note tag search failed for libraryID=" + libraryID + "; using fallback scan: " + e);
+      libraryNotes = await syncedProjectNotesFromFallbackScan(libraryID);
+    }
+
+    for (const noteItem of libraryNotes) {
+      if (notes.length >= LINKED_NOTE_AUTOSYNC_MAX_PER_TICK) break;
+      if (hasTag(noteItem, ERROR_TAG)) continue;
+
+      try {
+        assertNoCrossProjectConflict(noteItem);
+        const state = await getRootSyncState(noteItem.id);
+        if (state.statusCheckState === "error" || state.fileCheckState === "error") {
+          skippedUnsafe += 1;
+          continue;
+        }
+        if (!state.isCorrectRoot || !state.fileExists) {
+          skippedWrongRoot += 1;
+          continue;
+        }
+        if (activeIds.has(noteItem.id) && !activeNoteIsSettled(noteItem, nowMs)) {
+          skippedActive += 1;
+          continue;
+        }
+        notes.push(noteItem);
+      } catch (e) {
+        skippedUnsafe += 1;
+        Zotero.debug("[Codex BN Queue] Skipped linked-note autosync candidate " + (noteItem.key || noteItem.id) + ": " + shortErrorMessage(e));
+      }
+    }
+  }
+
+  return { notes, skippedActive, skippedUnsafe, skippedWrongRoot };
+}
+
+async function runProjectLinkedNoteAutosync() {
+  if (!ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC) {
+    return { enabled: false, candidates: 0, skippedActive: 0, skippedUnsafe: 0, skippedWrongRoot: 0 };
+  }
+  const onSyncing = Zotero.BetterNotes?.hooks?.onSyncing;
+  if (typeof onSyncing !== "function") {
+    Zotero.debug("[Codex BN Queue] Better Notes onSyncing hook unavailable; linked-note autosync skipped.");
+    return { enabled: true, candidates: 0, skippedActive: 0, skippedUnsafe: 0, skippedWrongRoot: 0, unavailable: true };
+  }
+
+  const { notes, skippedActive, skippedUnsafe, skippedWrongRoot } = await getProjectLinkedNotesForAutosync();
+  if (!notes.length) {
+    return { enabled: true, candidates: 0, skippedActive, skippedUnsafe, skippedWrongRoot };
+  }
+
+  await onSyncing(notes, {
+    quiet: true,
+    skipActive: false,
+    reason: `codex-project-linked-note-autosync:${PROJECT_ID}`,
+  });
+
+  return { enabled: true, candidates: notes.length, skippedActive, skippedUnsafe, skippedWrongRoot };
+}
+
 async function processOneQueuedItem(rawItem) {
   let noteItem = null;
 
@@ -806,8 +958,21 @@ async function processQueueOnce() {
 
   try {
     const autoSyncPrefStatus = checkBetterNotesAutoSyncPref();
+    const linkedAutosync = await runProjectLinkedNoteAutosync();
     const queued = await getQueuedItems();
-    if (!queued.length) return;
+    if (!queued.length) {
+      if (
+        linkedAutosync.candidates ||
+        linkedAutosync.skippedActive ||
+        linkedAutosync.skippedUnsafe ||
+        linkedAutosync.skippedWrongRoot
+      ) {
+        Zotero.debug(
+          `[Codex BN Queue] no queued items; linkedAutosync=${linkedAutosync.candidates}; skippedActive=${linkedAutosync.skippedActive}; skippedUnsafe=${linkedAutosync.skippedUnsafe}; skippedWrongRoot=${linkedAutosync.skippedWrongRoot}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
+        );
+      }
+      return;
+    }
 
     const stats = { processed: 0, alreadyLinked: 0, registered: 0, reregistered: 0, recreatedMissing: 0, refreshed: 0, failed: 0 };
     for (const rawItem of queued) {
@@ -822,7 +987,7 @@ async function processQueueOnce() {
     }
 
     Zotero.debug(
-      `[Codex BN Queue] processed=${stats.processed}; alreadyLinked=${stats.alreadyLinked}; registered=${stats.registered}; reregistered=${stats.reregistered}; recreatedMissing=${stats.recreatedMissing}; refreshed=${stats.refreshed}; failed=${stats.failed}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
+      `[Codex BN Queue] processed=${stats.processed}; alreadyLinked=${stats.alreadyLinked}; registered=${stats.registered}; reregistered=${stats.reregistered}; recreatedMissing=${stats.recreatedMissing}; refreshed=${stats.refreshed}; failed=${stats.failed}; linkedAutosync=${linkedAutosync.candidates}; skippedActive=${linkedAutosync.skippedActive}; skippedUnsafe=${linkedAutosync.skippedUnsafe}; skippedWrongRoot=${linkedAutosync.skippedWrongRoot}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
     );
   } catch (e) {
     Zotero.debug("[Codex BN Queue] processQueueOnce failed: " + shortErrorMessage(e));
