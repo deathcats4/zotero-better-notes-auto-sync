@@ -1,30 +1,34 @@
 # Zotero Better Notes Auto Sync
 
-这是一个给 Codex 使用的 Zotero → Better Notes → Obsidian 自动同步工作流 skill。
+把 Codex 写好的 Zotero 阅读笔记，交给 Better Notes 同步到 Obsidian。
 
-它解决的问题很具体：
+这个仓库不是一个新的 Zotero 插件，也不是 Obsidian 插件。它更像一段桥接工作流：
 
-1. Codex 通过 Zotero Web API / pyzotero 读取文献、PDF 元数据和已有笔记。
-2. Codex 在 Zotero 条目下面创建或更新一条结构化 child note。
-3. Codex 给 note 或 item 加上项目隔离的队列标签，例如 `Codex/Queue/BN-Sync/PROJECT_ID`。
-4. Zotero 桌面端里的 Actions & Tags 脚本检测到队列标签。
-5. 脚本调用 Better Notes 的 `syncMDBatch`，把 Zotero note 注册成可自动同步的 Markdown。
-6. Better Notes 负责 Zotero note 和本地 `.md` 文件之间的后续双向同步。
+```text
+Codex / pyzotero
+  -> 给 Zotero 条目或笔记加队列标签
+  -> Zotero 里的 Actions & Tags 脚本接手
+  -> 调用 Better Notes 注册 Markdown 同步
+  -> 后续由 Better Notes 负责 Zotero note 和 .md 文件的双向同步
+```
 
-换句话说，这不是一个新的 Zotero 插件，也不是 Obsidian 插件；它是 Codex + pyzotero + Actions & Tags + Better Notes 之间的轻量桥。
+我做它的出发点很简单：读文献时，笔记最好仍然挂在 Zotero 条目下面；但写作、整理和双链又更适合放在 Obsidian 里。Better Notes 已经能做 Zotero note 和 Markdown 的同步，这个项目只负责把 Codex 生成的 note 放进这条同步链路。
 
-## 当前定位
+## 适合谁
 
-这个项目适合小规模个人工作流、项目级文献阅读卡、以及 Zotero/Obsidian 自动化实验。它已经避免了“同步失败但提前贴成功标签”“一个坏 note 阻塞整批任务”“模板失败后重复建 note”和“重新排队已同步 note 时默认覆盖 Obsidian Markdown”这类高风险状态机问题。
+- 你平时用 Zotero 管文献，用 Obsidian 管知识库。
+- 你想让 Codex 帮你批量读文献、写阅读卡、整理初稿笔记。
+- 你希望每篇文献的主笔记仍然是 Zotero child note，而不是散落在某个文件夹里的孤立 Markdown。
+- 你已经在用 Better Notes，希望少一点手动导出、手动绑定、手动点菜单。
 
-但它仍然不是无人值守的大型 Zotero 基础设施。长期、大库、多项目、多用户场景更适合做成专门的 Zotero bridge plugin，通过 Zotero notifier 事件驱动，而不是依赖 Actions & Tags 轮询脚本。
+## 不适合谁
 
-## 适用场景
+- 你想要一个安装即用、长期无人值守的正式 Zotero 插件。
+- 你有很大的团队库，或者需要多人同时维护同一批同步笔记。
+- 你不想依赖 Better Notes / Actions & Tags 这类插件内部 API。
+- 你希望 pyzotero 直接操作 Better Notes。这个做不到；Better Notes API 只在 Zotero 桌面端里。
 
-- 你想让 Codex 读 Zotero 文献，并按固定模板写阅读卡。
-- 你希望阅读卡先成为 Zotero child note，而不是只生成孤立 Markdown。
-- 你希望 Better Notes 管理 Zotero note 与 Obsidian Markdown 的双向同步关系。
-- 你不想每篇文献都手动点 Better Notes 导出。
+如果只是个人项目、小批量文献、自己能接受备份和偶尔排查，这套流程已经够用。重要库、长期后台运行、多人协作，建议等真正的 Zotero bridge plugin。
 
 ## 需要安装
 
