@@ -438,8 +438,13 @@ function hasMinimumReadingContent(noteItem, parentKey) {
   return html.includes(marker) && text.length > 40;
 }
 
+function hasContentElement(html) {
+  return /<(img|table|tr|td|th|a|blockquote|figure|iframe|embed|object|video|audio|svg|math|annotation|span|code|pre)\b/i.test(html);
+}
+
 function hasAnyNoteContent(noteItem) {
   const html = noteItem?.getNote?.() || "";
+  if (hasContentElement(html)) return true;
   const text = html
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<[^>]*>/g, " ")

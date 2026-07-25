@@ -52,6 +52,7 @@ def check_common(source: str, label: str, restore_call: str, mark_error_call: st
     assert_contains(source, "return candidate === root;", label)
     assert_contains(source, "function pathExists", label)
     assert_contains(source, "function hasAnyNoteContent", label)
+    assert_contains(source, "function hasContentElement", label)
     assert_contains(source, 'return "already_linked";', label)
     assert_contains(source, 'return "recreated_missing_file";', label)
     assert_contains(source, 'throw new Error("sync_file_missing_recreate_disabled");', label)

@@ -96,7 +96,7 @@ Fix:
 
 ## Template note keeps duplicating after sync errors
 
-The current scripts use `Codex/BN-Initializing/<PROJECT_ID>` while creating a new note, then switch to `Codex/BN-Note/<PROJECT_ID>` only after content and marker are saved. For existing nonempty notes, the scripts preserve the current content and only append the project marker/tags if needed. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `INITIALIZING_TAG`.
+The current scripts use `Codex/BN-Initializing/<PROJECT_ID>` while creating a new note, then switch to `Codex/BN-Note/<PROJECT_ID>` only after content and marker are saved. For existing nonempty notes, including image-only, table-only, linked-image, citation, annotation, or embedded-media notes, the scripts preserve the current content and only append the project marker/tags if needed. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `INITIALIZING_TAG`.
 
 Fix:
 

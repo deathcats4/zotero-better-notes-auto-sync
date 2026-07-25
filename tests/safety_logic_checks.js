@@ -59,6 +59,19 @@ function checkHelpers(label, helpers) {
     false,
     `${label}: short note lacks project marker but must still be recognized as nonempty`,
   );
+
+  for (const [caseName, html] of [
+    ["image", '<p><img src="zotero://attachment/foo"></p>'],
+    ["table", "<table><tbody><tr><td></td></tr></tbody></table>"],
+    ["linked image", '<p><a href="https://example.com"><img src="x.png"></a></p>'],
+    ["citation span", '<span class="citation-item" data-citation-key="abc"></span>'],
+  ]) {
+    assert.strictEqual(
+      helpers.hasAnyNoteContent({ getNote: () => html }),
+      true,
+      `${label}: ${caseName} note should be protected even without visible text`,
+    );
+  }
 }
 
 checkHelpers(
