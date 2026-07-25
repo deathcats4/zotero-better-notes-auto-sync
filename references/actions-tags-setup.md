@@ -47,6 +47,12 @@ Keep this default unless you intentionally want Zotero note content to overwrite
 const FORCE_EXPORT_EXISTING = false;
 ```
 
+Keep this default unless you intentionally want to move an already-linked Zotero note from another Better Notes project/root into this one:
+
+```js
+const ALLOW_CROSS_PROJECT_MIGRATION = false;
+```
+
 For the daemon, personal library is the default. To scan group libraries or multiple libraries, edit:
 
 ```js
@@ -84,6 +90,6 @@ After running the manual action or daemon:
 - A Markdown file exists under `ROOT_DIR`.
 - The Markdown YAML contains `$itemKey` matching the Zotero note key.
 
-If a note is already synced to this project root and its Markdown file exists, the selected action should report `alreadyLinked` and should not call `syncMDBatch`. If the Markdown file is missing, the script re-exports it when `RECREATE_MISSING_MARKDOWN = true`; otherwise it fails and preserves the queue state. If it is synced to a different root, the script attempts to re-register it under the current `ROOT_DIR` and leaves any old Markdown copy for the user to review.
+If a note is already synced to this project root and its Markdown file exists, the selected action should report `alreadyLinked` and should not call `syncMDBatch`. If the Markdown file is missing, the script re-exports it when `RECREATE_MISSING_MARKDOWN = true`; otherwise it fails and preserves the queue state. If the file existence check itself errors, the script reports `sync_file_check_failed` and does not re-export. If the note is synced to a different root or carries another project's ownership tags/marker, the script reports `cross_project_note_conflict` by default; create a separate child note for the second project, or temporarily enable `ALLOW_CROSS_PROJECT_MIGRATION` for an intentional migration.
 
 If Markdown sync succeeds but Zotero state saving fails, the script restores the original queue tag placement and reports `sync_succeeded_state_save_failed` so the item can be retried after the save problem is fixed.

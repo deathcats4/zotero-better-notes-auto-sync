@@ -61,13 +61,16 @@ Default behavior:
 - error-tagged items are skipped on later polling ticks;
 - the note, if available, receives an HTML comment with a redacted short error message;
 - clear the error tag after fixing the cause to retry.
+- or run `python scripts/queue_zotero_items.py KEY --project-id <PROJECT_ID> --retry-errors` to add the queue tag and remove the current project error tag in one step.
 - a later successful retry removes the project error marker before sync verification, so Markdown does not keep the old error marker.
 
 Common causes:
 
 - `ROOT_DIR` does not exist or is not writable.
 - Better Notes failed to convert the note to Markdown.
-- The note was already linked to a different root and Better Notes did not update the sync status.
+- The note was already linked to a different root or belongs to another project, which is blocked by default as `cross_project_note_conflict`.
+- Better Notes could not preflight a safe Markdown filename via `getMDFileName`, reported as `markdown_filename_precheck_unavailable`, `markdown_filename_precheck_failed`, or `unsafe_markdown_filename`.
+- The Markdown file status could not be checked due to permissions, offline network/sync disk, or IO failure, reported as `sync_file_check_failed`.
 - Better Notes auto-sync is disabled globally.
 - Zotero state saving failed after Markdown sync succeeded; this is reported as `sync_succeeded_state_save_failed`.
 
@@ -84,15 +87,16 @@ Expected recovery behavior:
 
 ## Markdown exists but is in the wrong project folder
 
-Cause: the note may already be a Better Notes sync note for another project/root.
+Cause: the note may already be a Better Notes sync note for another project/root. Better Notes stores one sync status per note, so the scripts now block this by default instead of silently changing the binding.
 
 Fix:
 
 1. Use a project-specific `PROJECT_ID`.
 2. Confirm the note has `Codex/BN-Note/<PROJECT_ID>` and `Codex/BN-Synced/<PROJECT_ID>`, not a generic success tag.
 3. Confirm `getSyncStatus(noteID).path` exactly equals the configured `ROOT_DIR`, and its safe `filename` resolves to an existing file under that folder.
-4. Re-run the manual action; the script attempts to re-register notes whose sync status points to a different root.
-5. Review the old Markdown copy in the previous folder. The script does not delete or move it automatically because it may belong to another project.
+4. Prefer creating a separate child note for the second project.
+5. For an intentional migration, temporarily set `ALLOW_CROSS_PROJECT_MIGRATION = true`, run the manual action once, then set it back to `false`.
+6. Review the old Markdown copy in the previous folder. The script does not delete or move it automatically because it may belong to another project.
 
 ## Template note keeps duplicating after sync errors
 

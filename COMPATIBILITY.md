@@ -24,11 +24,12 @@ The scripts expect these APIs to exist inside the Zotero desktop process:
 Zotero.BetterNotes.api.$export.syncMDBatch(saveDir, noteIds, metaList)
 Zotero.BetterNotes.api.sync.isSyncNote(noteId)
 Zotero.BetterNotes.api.sync.getSyncStatus(noteId)
+Zotero.BetterNotes.api.sync.getMDFileName(noteId, saveDir)
 Zotero.BetterNotes.api.template.runItemTemplate(...)
 Zotero.BetterNotes.api.note.insert(...)
 ```
 
-Only `syncMDBatch`, `isSyncNote`, and `getSyncStatus` are required for the core Markdown sync registration. Template APIs are optional; the scripts fall back to built-in HTML reading-card content when no template is configured.
+`syncMDBatch`, `isSyncNote`, `getSyncStatus`, and `getMDFileName` are required for safe core Markdown sync registration. `getMDFileName` is used as a pre-write filename safety check before Better Notes writes any Markdown. Template APIs are optional; the scripts fall back to built-in HTML reading-card content when no template is configured.
 
 ## Actions & Tags behavior assumed
 

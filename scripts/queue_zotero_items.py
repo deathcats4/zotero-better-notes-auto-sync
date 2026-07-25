@@ -43,12 +43,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, default=0, help="Limit collection items processed. 0 means no limit.")
     parser.add_argument("--include-notes", action="store_true", help="When using --collection-key, include note items too.")
+    parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="Remove this project's Codex/BN-Sync-Error tag while adding the queue tag, so the daemon retries failed items.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Report what would change without updating Zotero.")
     return parser.parse_args()
 
 
 def queue_tag(args: argparse.Namespace) -> str:
     return args.tag or f"Codex/Queue/BN-Sync/{args.project_id}"
+
+
+def error_tag(args: argparse.Namespace) -> str:
+    return f"Codex/BN-Sync-Error/{args.project_id}"
 
 
 def client() -> zotero.Zotero:
@@ -76,6 +85,15 @@ def add_tag(data: dict[str, Any], tag: str) -> bool:
     if any(t.get("tag") == tag for t in tags):
         return False
     tags.append({"tag": tag})
+    return True
+
+
+def remove_tag(data: dict[str, Any], tag: str) -> bool:
+    tags = data.setdefault("tags", [])
+    kept = [t for t in tags if t.get("tag") != tag]
+    if len(kept) == len(tags):
+        return False
+    data["tags"] = kept
     return True
 
 
@@ -118,11 +136,14 @@ def main() -> int:
     zot = client()
     items = collect_items(zot, args)
     tag = queue_tag(args)
+    retry_error_tag = error_tag(args)
     results: list[dict[str, Any]] = []
 
     for item in items:
         data = item["data"]
-        changed = add_tag(data, tag)
+        queued = add_tag(data, tag)
+        error_cleared = remove_tag(data, retry_error_tag) if args.retry_errors else False
+        changed = queued or error_cleared
         updated = False
         error = None
         if changed and not args.dry_run:
@@ -136,7 +157,8 @@ def main() -> int:
                 "key": item["key"],
                 "title": item_title(item),
                 "itemType": data.get("itemType"),
-                "queued": changed,
+                "queued": queued,
+                "error_cleared": error_cleared,
                 "updated": updated,
                 "dry_run": args.dry_run,
                 "error": error,

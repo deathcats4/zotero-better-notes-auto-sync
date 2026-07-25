@@ -14,6 +14,7 @@
  *   Zotero.BetterNotes.api.$export.syncMDBatch
  *   Zotero.BetterNotes.api.sync.isSyncNote
  *   Zotero.BetterNotes.api.sync.getSyncStatus
+ *   Zotero.BetterNotes.api.sync.getMDFileName
  */
 
 // Edit these before pasting the script into Actions & Tags.
@@ -34,6 +35,10 @@ const BN_AUTOSYNC_PREF = "extensions.zotero.Knowledge4Zotero.sync.autoSyncLinked
 const FORCE_EXPORT_EXISTING = false; // Keep false unless you explicitly want Zotero note -> Markdown overwrite.
 const RECREATE_MISSING_MARKDOWN = true; // Safe repair: export only when the linked Markdown file is gone.
 const INITIALIZING_TAG = `Codex/BN-Initializing/${PROJECT_ID}`;
+const ALLOW_CROSS_PROJECT_MIGRATION = false; // Set true only when intentionally moving a note to this ROOT_DIR.
+const CODEX_SYNC_TAG_PREFIX = "Codex/BN-Synced/";
+const CODEX_NOTE_TAG_PREFIX = "Codex/BN-Note/";
+const CODEX_MARKER_PROJECT_RE = /codex-bn-sync:([^:\s<>]+):/g;
 
 function escapeHTML(value) {
   return String(value || "")
@@ -68,6 +73,10 @@ function sanitizeComment(value) {
 
 function shortErrorMessage(error) {
   return sanitizeComment(error?.message ?? String(error || "unknown_error"));
+}
+
+function isTransientLockError(error) {
+  return String(error?.message || error || "").includes("codex_bn_lock_busy");
 }
 
 function uniqById(values) {
@@ -108,6 +117,39 @@ function removeTagIfPresent(zoteroItem, tag) {
   if (zoteroItem && hasTag(zoteroItem, tag)) zoteroItem.removeTag(tag);
 }
 
+function ensureSharedLockContainers() {
+  if (!globalThis.__codexBNItemLocks || typeof globalThis.__codexBNItemLocks.has !== "function") {
+    globalThis.__codexBNItemLocks = new Set();
+  }
+  if (!globalThis.__codexBNNoteLocks || typeof globalThis.__codexBNNoteLocks.has !== "function") {
+    globalThis.__codexBNNoteLocks = new Set();
+  }
+}
+
+async function withSharedLock(lockSetName, lockKey, callback) {
+  ensureSharedLockContainers();
+  const locks = globalThis[lockSetName];
+  if (locks.has(lockKey)) {
+    throw new Error(`codex_bn_lock_busy: ${lockKey}`);
+  }
+  locks.add(lockKey);
+  try {
+    return await callback();
+  } finally {
+    locks.delete(lockKey);
+  }
+}
+
+async function withItemLock(parentItem, callback) {
+  const key = `item:${PROJECT_ID}:${parentItem.libraryID}:${parentItem.id}`;
+  return withSharedLock("__codexBNItemLocks", key, callback);
+}
+
+async function withNoteLock(noteItem, callback) {
+  const key = `note:${noteItem.libraryID}:${noteItem.id}`;
+  return withSharedLock("__codexBNNoteLocks", key, callback);
+}
+
 async function saveChangedItems(itemsToSave) {
   const seen = new Set();
   const failures = [];
@@ -136,16 +178,19 @@ async function ensureDir(path) {
 }
 
 async function pathExists(path) {
-  if (!path) return false;
+  if (!path) return { state: "missing" };
   try {
+    let exists = false;
     if (typeof IOUtils !== "undefined" && IOUtils.exists) {
-      return await IOUtils.exists(path);
+      exists = await IOUtils.exists(path);
+    } else {
+      const { OS } = ChromeUtils.importESModule("chrome://zotero/content/osfile.mjs");
+      exists = await OS.File.exists(path);
     }
-    const { OS } = ChromeUtils.importESModule("chrome://zotero/content/osfile.mjs");
-    return await OS.File.exists(path);
+    return { state: exists ? "exists" : "missing" };
   } catch (e) {
     Zotero.debug("[Codex BN Sync] Could not check Markdown path existence: " + shortErrorMessage(e));
-    return false;
+    return { state: "error", error: e };
   }
 }
 
@@ -208,6 +253,10 @@ function hasUnsafeFilename(filename) {
   );
 }
 
+function hasUnsafeMarkdownFilename(filename) {
+  return hasUnsafeFilename(filename) || !/\.md$/i.test(String(filename || ""));
+}
+
 function joinPath(dir, filename) {
   return String(dir || "").replaceAll("/", "\\").replace(/\\+$/g, "") + "\\" + filename;
 }
@@ -215,7 +264,7 @@ function joinPath(dir, filename) {
 function statusFullPath(status) {
   const statusPath = extractStatusPath(status);
   const filename = extractStatusFilename(status);
-  if (!statusPath || hasUnsafeFilename(filename)) return "";
+  if (!statusPath || hasUnsafeMarkdownFilename(filename)) return "";
   return joinPath(statusPath, filename);
 }
 
@@ -223,6 +272,56 @@ function isStatusFileInRoot(status) {
   const statusPath = extractStatusPath(status);
   const fullPath = statusFullPath(status);
   return !!statusPath && !!fullPath && isPathInRoot(statusPath) && isFilePathInRoot(fullPath);
+}
+
+function otherProjectOwnershipTokens(noteItem) {
+  const conflicts = [];
+  const tags = noteItem?.getTags?.() || [];
+  for (const tagObject of tags) {
+    const tag = tagObject?.tag || "";
+    if (tag.startsWith(CODEX_SYNC_TAG_PREFIX) && tag !== SYNC_TAG) conflicts.push(tag);
+    if (tag.startsWith(CODEX_NOTE_TAG_PREFIX) && tag !== NOTE_TAG) conflicts.push(tag);
+  }
+
+  const html = noteItem?.getNote?.() || "";
+  for (const match of html.matchAll(CODEX_MARKER_PROJECT_RE)) {
+    const markerProject = match[1];
+    if (markerProject && markerProject !== PROJECT_ID) conflicts.push(`marker:${markerProject}`);
+  }
+  return [...new Set(conflicts)];
+}
+
+function assertNoCrossProjectConflict(noteItem) {
+  const conflicts = otherProjectOwnershipTokens(noteItem);
+  if (conflicts.length && !ALLOW_CROSS_PROJECT_MIGRATION) {
+    throw new Error(`cross_project_note_conflict: ${conflicts.slice(0, 4).join(", ")}`);
+  }
+}
+
+function markdownFilenameFromValue(value) {
+  if (typeof value === "string") return value;
+  return extractStatusFilename(value);
+}
+
+async function preflightMarkdownFilename(noteId) {
+  const getMDFileName = Zotero.BetterNotes?.api?.sync?.getMDFileName;
+  if (typeof getMDFileName !== "function") {
+    throw new Error("markdown_filename_precheck_unavailable");
+  }
+
+  let filename = "";
+  try {
+    filename = markdownFilenameFromValue(await getMDFileName(noteId, ROOT_DIR));
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] Better Notes getMDFileName failed for noteID=" + noteId + ": " + e);
+    throw new Error("markdown_filename_precheck_failed");
+  }
+
+  if (hasUnsafeMarkdownFilename(filename)) {
+    Zotero.debug("[Codex BN Sync] Unsafe Markdown filename before export for noteID=" + noteId + ": " + redactLocalPaths(filename));
+    throw new Error("unsafe_markdown_filename");
+  }
+  return filename;
 }
 
 async function getRootSyncState(noteId) {
@@ -247,36 +346,50 @@ async function getRootSyncState(noteId) {
     Zotero.debug("[Codex BN Sync] isSyncNote failed for noteID=" + noteId + ": " + e);
   }
 
+  const fileCheck = await pathExists(fullPath);
   return {
     isAnySyncNote,
     statusPath,
     statusFilename,
     fullPath,
-    fileExists: await pathExists(fullPath),
+    fileCheckState: fileCheck.state,
+    fileCheckError: fileCheck.error ? shortErrorMessage(fileCheck.error) : "",
+    fileExists: fileCheck.state === "exists",
     isCorrectRoot: isStatusFileInRoot(status),
   };
 }
 
 async function syncNoteToRoot(noteItem) {
   await ensureDir(ROOT_DIR);
+  assertNoCrossProjectConflict(noteItem);
 
   const before = await getRootSyncState(noteItem.id);
+  if (before.isCorrectRoot && before.fileCheckState === "error") {
+    throw new Error("sync_file_check_failed");
+  }
   if (before.isCorrectRoot && before.fileExists && !FORCE_EXPORT_EXISTING) {
     return "already_linked";
   }
   if (before.isCorrectRoot && !before.fileExists && !RECREATE_MISSING_MARKDOWN) {
     throw new Error("sync_file_missing_recreate_disabled");
   }
+  if (before.isAnySyncNote && !before.isCorrectRoot && !ALLOW_CROSS_PROJECT_MIGRATION) {
+    throw new Error("cross_project_note_conflict: note is already registered to another Better Notes root");
+  }
   if (before.isAnySyncNote && !before.isCorrectRoot) {
-    Zotero.debug("[Codex BN Sync] Note " + noteItem.key + " is linked outside this project root; re-registering without deleting the old Markdown copy.");
+    Zotero.debug("[Codex BN Sync] Cross-project migration is enabled for note " + noteItem.key + "; re-registering without deleting the old Markdown copy.");
   }
 
+  await preflightMarkdownFilename(noteItem.id);
   await Zotero.BetterNotes.api.$export.syncMDBatch(ROOT_DIR, [noteItem.id]);
 
   const after = await getRootSyncState(noteItem.id);
   if (!after.isCorrectRoot) {
     Zotero.debug("[Codex BN Sync] sync status outside ROOT_DIR after export for note " + noteItem.key + ": path=" + redactLocalPaths(after.statusPath) + "; filename=" + after.statusFilename);
     throw new Error("sync_status_wrong_root");
+  }
+  if (after.fileCheckState === "error") {
+    throw new Error("sync_file_check_failed");
   }
   if (!after.fileExists) {
     Zotero.debug("[Codex BN Sync] sync status points to missing Markdown after export for note " + noteItem.key + ": " + redactLocalPaths(after.fullPath));
@@ -419,23 +532,40 @@ async function applyTemplateOrFallback(parentItem, noteItem) {
 function findExistingCodexNote(parentItem) {
   const noteIDs = parentItem.getNotes ? parentItem.getNotes() : [];
   const noteItems = Zotero.Items.get(noteIDs || []);
-  return noteItems.find((noteItem) => {
-    const noteHTML = noteItem.getNote?.() || "";
-    return (
-      hasTag(noteItem, INITIALIZING_TAG) ||
-      hasTag(noteItem, NOTE_TAG) ||
-      hasTag(noteItem, SYNC_TAG) ||
-      hasTag(noteItem, ERROR_TAG) ||
-      noteHTML.includes(`${CODEX_MARKER_PREFIX}${parentItem.key}`)
-    );
-  });
+  const candidates = noteItems
+    .map((noteItem) => ({ noteItem, score: codexNoteMatchScore(noteItem, parentItem.key) }))
+    .filter((candidate) => candidate.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  return candidates[0]?.noteItem || null;
+}
+
+function codexNoteMatchScore(noteItem, parentKey) {
+  const noteHTML = noteItem.getNote?.() || "";
+  let score = 0;
+  if (noteHTML.includes(`${CODEX_MARKER_PREFIX}${parentKey}`)) score += 100;
+  if (hasTag(noteItem, SYNC_TAG)) score += 80;
+  if (hasTag(noteItem, NOTE_TAG)) score += 70;
+  if (hasTag(noteItem, ERROR_TAG)) score += 30;
+  if (hasTag(noteItem, INITIALIZING_TAG)) score += 10;
+  if (!score) return -1;
+  if (hasMinimumReadingContent(noteItem, parentKey)) score += 20;
+  if (hasAnyNoteContent(noteItem)) score += 5;
+  return score;
+}
+
+function visibleNoteText(noteItem) {
+  return (noteItem?.getNote?.() || "")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function hasMinimumReadingContent(noteItem, parentKey) {
   const html = noteItem?.getNote?.() || "";
   const marker = `${CODEX_MARKER_PREFIX}${parentKey}`;
-  const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-  return html.includes(marker) && text.length > 40;
+  return html.includes(marker) && visibleNoteText(noteItem).length > 40;
 }
 
 function hasContentElement(html) {
@@ -445,18 +575,13 @@ function hasContentElement(html) {
 function hasAnyNoteContent(noteItem) {
   const html = noteItem?.getNote?.() || "";
   if (hasContentElement(html)) return true;
-  const text = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return text.length > 0;
+  return visibleNoteText(noteItem).length > 0;
 }
 
 async function getOrCreateReadingNote(parentItem) {
   const existing = findExistingCodexNote(parentItem);
   if (existing) {
+    assertNoCrossProjectConflict(existing);
     addTagOnce(existing, REVIEW_TAG);
     if (!hasMinimumReadingContent(existing, parentItem.key)) {
       if (hasAnyNoteContent(existing)) {
@@ -516,11 +641,12 @@ function markDone(rawItem, noteItem) {
 }
 
 function markError(rawItem, noteItem, error) {
+  const crossProjectConflict = String(error?.message || error || "").includes("cross_project_note_conflict");
   for (const zoteroItem of [rawItem, noteItem]) {
     if (!zoteroItem) continue;
     removeTagIfPresent(zoteroItem, SYNC_TAG);
     addTagOnce(zoteroItem, ERROR_TAG);
-    if (zoteroItem.isNote?.()) {
+    if (zoteroItem.isNote?.() && !crossProjectConflict) {
       addTagOnce(zoteroItem, NOTE_TAG);
       addTagOnce(zoteroItem, REVIEW_TAG);
     }
@@ -540,8 +666,8 @@ function restoreQueueState(rawItem, noteItem, queueState) {
   if (queueState?.noteWasQueued) addTagOnce(noteItem, QUEUE_TAG);
 }
 
-if (!Zotero.BetterNotes?.api?.$export?.syncMDBatch) {
-  return "[Codex BN Sync] Better Notes API not available. Check Better Notes is installed/enabled.";
+if (!Zotero.BetterNotes?.api?.$export?.syncMDBatch || !Zotero.BetterNotes?.api?.sync?.getMDFileName) {
+  return "[Codex BN Sync] Required Better Notes APIs not available. Check Better Notes is installed/enabled and exposes syncMDBatch/getMDFileName.";
 }
 
 const { selected, ignoredPerItemCallback } = selectedItemsFromActionContext();
@@ -576,6 +702,7 @@ for (const raw of selected) {
   let noteItem = null;
   try {
     if (raw.isNote && raw.isNote()) {
+      assertNoCrossProjectConflict(raw);
       noteItem = raw;
       addTagOnce(noteItem, NOTE_TAG);
       addTagOnce(noteItem, REVIEW_TAG);
@@ -586,7 +713,7 @@ for (const raw of selected) {
         continue;
       }
 
-      const result = await getOrCreateReadingNote(parent);
+      const result = await withItemLock(parent, () => getOrCreateReadingNote(parent));
       noteItem = result.noteItem;
       if (result.created) stats.created += 1;
       else stats.existing += 1;
@@ -599,15 +726,19 @@ for (const raw of selected) {
       await saveChangedItems([noteItem]);
     }
 
-    const queueState = captureQueueState(raw, noteItem);
-    const syncAction = await syncNoteToRoot(noteItem);
-    try {
-      markDone(raw, noteItem);
-      await saveChangedItems([raw, noteItem]);
-    } catch (stateError) {
-      restoreQueueState(raw, noteItem, queueState);
-      throw new Error(`sync_succeeded_state_save_failed: ${shortErrorMessage(stateError)}`);
-    }
+    const syncAction = await withNoteLock(noteItem, async () => {
+      assertNoCrossProjectConflict(noteItem);
+      const queueState = captureQueueState(raw, noteItem);
+      const action = await syncNoteToRoot(noteItem);
+      try {
+        markDone(raw, noteItem);
+        await saveChangedItems([raw, noteItem]);
+      } catch (stateError) {
+        restoreQueueState(raw, noteItem, queueState);
+        throw new Error(`sync_succeeded_state_save_failed: ${shortErrorMessage(stateError)}`);
+      }
+      return action;
+    });
 
     if (syncAction === "already_linked") stats.alreadyLinked += 1;
     if (syncAction === "forced_refreshed") stats.refreshed += 1;
@@ -618,11 +749,13 @@ for (const raw of selected) {
     noteKeys.push(noteItem.key);
   } catch (e) {
     Zotero.debug("[Codex BN Sync] Failed on selected item " + (raw?.key || raw?.id) + ": " + e);
-    markError(raw, noteItem, e);
-    try {
-      await saveChangedItems([raw, noteItem]);
-    } catch (stateError) {
-      Zotero.debug("[Codex BN Sync] Failed to save error state for " + (raw?.key || raw?.id) + ": " + stateError);
+    if (!isTransientLockError(e)) {
+      markError(raw, noteItem, e);
+      try {
+        await saveChangedItems([raw, noteItem]);
+      } catch (stateError) {
+        Zotero.debug("[Codex BN Sync] Failed to save error state for " + (raw?.key || raw?.id) + ": " + stateError);
+      }
     }
     stats.failed += 1;
     failures.push(`${raw?.key || raw?.id}: ${shortErrorMessage(e).slice(0, 160)}`);

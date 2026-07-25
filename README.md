@@ -77,9 +77,12 @@ const TEMPLATE_NAME = "";
 ```js
 const FORCE_EXPORT_EXISTING = false;
 const RECREATE_MISSING_MARKDOWN = true;
+const ALLOW_CROSS_PROJECT_MIGRATION = false;
 ```
 
 保持 `FORCE_EXPORT_EXISTING = false` 可以避免重新排队已同步 note 时，把 Zotero note 的旧内容强制覆盖到 Obsidian Markdown。只有你明确要用 Zotero 端覆盖 Markdown 时，才临时改成 `true`。
+
+保持 `ALLOW_CROSS_PROJECT_MIGRATION = false` 可以避免同一 Zotero note 被多个项目轮流改写 Better Notes 的唯一同步绑定。更推荐每个项目使用独立 child note；只有你明确要迁移这条 note 到新的 `ROOT_DIR` 时，才临时改成 `true`。
 
 脚本：
 
@@ -136,13 +139,21 @@ python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold
 python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id axi-gold
 ```
 
+失败修复后显式重试 error-tagged 项目：
+
+```powershell
+python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold --retry-errors
+```
+
 Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显式排队会先清除旧的项目错误 marker 并保存 note，然后检查 Better Notes sync status 的 `path + filename`：
 
 - 如果 note 尚未登记到当前 `ROOT_DIR`，脚本调用 `syncMDBatch()` 注册/导出。
+- 在任何导出前，脚本先调用 Better Notes `getMDFileName(noteID, ROOT_DIR)`，拒绝目录分隔符、绝对路径、`..` 和非 `.md` 文件名；导出后仍会再次验证 `path + filename`。
 - 如果已有项目 note 非空但缺少 marker 或正文较短，脚本只补项目 marker 和标签，不用 fallback 覆盖原内容；纯图片、纯表格、纯链接、citation/annotation 等结构化内容也视为非空。只有真正空 note 才会被模板/fallback 初始化。
 - 如果 note 已登记到当前 `ROOT_DIR` 且 Markdown 文件存在，默认不再调用 `syncMDBatch()`，避免覆盖 Obsidian 端尚未回写到 Zotero 的修改。状态中的 `path` 必须严格等于 `ROOT_DIR`，不会接受 `ROOT_DIR\..\outside` 这类词法前缀路径。
+- 如果文件存在性检查本身失败，例如权限、网络盘、同步盘或系统 IO 异常，脚本会报 `sync_file_check_failed` 并保留队列，不会把“无法检查”当作“文件缺失”来重建。
 - 如果 note 已登记但 Markdown 文件缺失，默认会重新导出以修复缺失文件；如果你把 `RECREATE_MISSING_MARKDOWN` 改成 `false`，脚本会报错并保留队列，而不是贴成功标签。
-- 如果 note 已登记到其他目录，脚本会重新登记到当前目录，但不会自动删除旧目录中的旧 Markdown 副本。
+- 如果 note 已登记到其他目录，或带有其他项目的 `Codex/BN-Synced/*` / `Codex/BN-Note/*` / marker，默认报 `cross_project_note_conflict` 并保留队列。只有显式启用 `ALLOW_CROSS_PROJECT_MIGRATION` 才会迁移绑定；旧目录中的旧 Markdown 副本仍不会自动删除。
 
 成功后：
 
@@ -162,7 +173,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显
 - 移除 `Codex/BN-Synced/PROJECT_ID`
 - 在 note 中写入一条 HTML comment 形式的错误 marker，只记录脱敏后的短错误信息；本地目录、用户目录和 stack 只进入 `Zotero.debug`
 - 如果 Markdown 同步已成功但 Zotero 状态保存失败，脚本会恢复原有队列标签并报告 `sync_succeeded_state_save_failed`
-- 默认跳过 error-tagged item，直到你清除错误标签后重试
+- 默认跳过 error-tagged item，直到你清除错误标签后重试；也可以用 Python helper 的 `--retry-errors` 在重新排队时同时移除当前项目错误标签
 
 ## 重要限制
 
@@ -171,6 +182,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显
 - Better Notes 的自动同步不是实时文件监听，通常按周期同步；默认可能是约 30 秒。
 - 真正的双向同步由 Better Notes 管理，本项目只负责把 Codex 生成的 Zotero note 注册进 Better Notes 同步体系。
 - 重新排队已经同步且 Markdown 文件存在的 note 时，默认只确认绑定关系并清理队列标签，不强制刷新导出。这样更适合双向同步；如果要用 Zotero 覆盖 Markdown，需要显式打开 `FORCE_EXPORT_EXISTING`。
+- 同一 Zotero note 默认只能属于一个 Better Notes 同步项目，因为 Better Notes 对每个 note 只有一份 sync status。多项目阅读时，使用各自的 child note 更安全。
 - queue daemon 使用 Zotero tag search 查找队列标签，并默认每 30 秒处理最多 8 条；这比全库扫描轻，但仍不是大型库的最佳长期方案。
 - 多个项目 daemon 可以同时常驻；timer 和 busy lock 按 `PROJECT_ID` 隔离。同一 `PROJECT_ID` 的脚本重新执行时会重载 timer，使新的 `ROOT_DIR` / `POLL_SECONDS` / `LIBRARY_IDS` 生效。
 
