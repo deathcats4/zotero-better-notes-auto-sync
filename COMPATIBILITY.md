@@ -29,7 +29,7 @@ Zotero.BetterNotes.api.template.runItemTemplate(...)
 Zotero.BetterNotes.api.note.insert(...)
 ```
 
-`syncMDBatch`, `isSyncNote`, `getSyncStatus`, and `getMDFileName` are required for safe core Markdown sync registration. `getMDFileName` is used as a pre-write filename safety check before Better Notes writes any Markdown. Template APIs are optional; the scripts fall back to built-in HTML reading-card content when no template is configured.
+`syncMDBatch`, `isSyncNote`, `getSyncStatus`, and `getMDFileName` are required for safe core Markdown sync registration. The scripts fail closed if `getSyncStatus()` or `isSyncNote()` cannot be read, because unknown sync state must not be treated as an unsynced note. `getMDFileName` is used as a pre-write filename safety check before Better Notes writes any Markdown. Template APIs are optional; the scripts fall back to built-in HTML reading-card content when no template is configured.
 
 ## Actions & Tags behavior assumed
 

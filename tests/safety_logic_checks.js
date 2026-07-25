@@ -14,7 +14,9 @@ function loadHelpers(relativePath, stopMarker) {
     `${prefix}
 return {
   assertNoCrossProjectConflict,
+  clearOtherProjectOwnership,
   codexNoteMatchScore,
+  getRootSyncState,
   hasAnyNoteContent,
   hasMinimumReadingContent,
   hasUnsafeFilename,
@@ -105,13 +107,17 @@ async function checkHelpers(label, helpers) {
   );
 
   const tagConflictNote = {
-    getTags: () => [{ tag: "Codex/BN-Synced/other-project" }],
+    getTags: () => [
+      { tag: "Codex/BN-Synced/other-project" },
+      { tag: "Codex/Queue/BN-Sync/other-project" },
+      { tag: "Codex/BN-Sync-Error/other-project" },
+    ],
     getNote: () => "",
   };
   assert.deepStrictEqual(
     helpers.otherProjectOwnershipTokens(tagConflictNote),
-    ["Codex/BN-Synced/other-project"],
-    `${label}: should detect other project success tags`,
+    ["Codex/BN-Synced/other-project", "Codex/Queue/BN-Sync/other-project", "Codex/BN-Sync-Error/other-project"],
+    `${label}: should detect other project status tags`,
   );
   assert.throws(
     () => helpers.assertNoCrossProjectConflict(tagConflictNote),
@@ -128,6 +134,37 @@ async function checkHelpers(label, helpers) {
     ["marker:other-project"],
     `${label}: should detect other project markers`,
   );
+
+  let migrationTags = [
+    "Codex/Queue/BN-Sync/PROJECT_NAME",
+    "Codex/BN-Synced/PROJECT_NAME",
+    "Codex/BN-Note/PROJECT_NAME",
+    "Codex/BN-Synced/old-project",
+    "Codex/BN-Note/old-project",
+    "Codex/BN-Sync-Error/old-project",
+    "Codex/BN-Initializing/old-project",
+  ];
+  let migrationHTML =
+    '<p><!-- codex-bn-sync:old-project:ITEMKEY --></p><p><!-- codex-bn-sync:PROJECT_NAME:ITEMKEY --></p><p>Visible text</p>';
+  const migrationNote = {
+    isNote: () => true,
+    getTags: () => migrationTags.map((tag) => ({ tag })),
+    removeTag: (tag) => {
+      migrationTags = migrationTags.filter((existing) => existing !== tag);
+    },
+    getNote: () => migrationHTML,
+    setNote: (html) => {
+      migrationHTML = html;
+    },
+  };
+  helpers.clearOtherProjectOwnership(migrationNote);
+  assert.deepStrictEqual(
+    migrationTags,
+    ["Codex/Queue/BN-Sync/PROJECT_NAME", "Codex/BN-Synced/PROJECT_NAME", "Codex/BN-Note/PROJECT_NAME"],
+    `${label}: migration cleanup should remove only other-project ownership tags`,
+  );
+  assert(!migrationHTML.includes("old-project"), `${label}: migration cleanup should remove old project marker`);
+  assert(migrationHTML.includes("codex-bn-sync:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current marker`);
 
   global.Zotero = { debug() {} };
   global.IOUtils = { exists: async () => true };
@@ -161,12 +198,67 @@ async function checkHelpers(label, helpers) {
     /markdown_filename_precheck_unavailable/,
     `${label}: missing getMDFileName should fail closed`,
   );
+
+  global.IOUtils = { exists: async () => true };
+  global.Zotero = {
+    debug() {},
+    BetterNotes: {
+      api: {
+        sync: {
+          getSyncStatus: async () => ({ path: root, filename: "note.md" }),
+          isSyncNote: async () => true,
+        },
+      },
+    },
+  };
+  const okState = await helpers.getRootSyncState(123);
+  assert.strictEqual(okState.statusCheckState, "ok", `${label}: status check should pass when both APIs work`);
+  assert.strictEqual(okState.fileExists, true, `${label}: status check should still verify file existence when status works`);
+
+  global.Zotero = {
+    debug() {},
+    BetterNotes: {
+      api: {
+        sync: {
+          getSyncStatus: async () => {
+            throw new Error("temporary status failure");
+          },
+          isSyncNote: async () => true,
+        },
+      },
+    },
+  };
+  const getStatusFailed = await helpers.getRootSyncState(123);
+  assert.strictEqual(getStatusFailed.statusCheckState, "error", `${label}: getSyncStatus failure should fail closed`);
+  assert.match(getStatusFailed.statusCheckError, /getSyncStatus_failed/, `${label}: getSyncStatus failure should be explicit`);
+
+  global.Zotero = {
+    debug() {},
+    BetterNotes: {
+      api: {
+        sync: {
+          getSyncStatus: async () => ({ path: root, filename: "note.md" }),
+          isSyncNote: async () => {
+            throw new Error("temporary sync-note failure");
+          },
+        },
+      },
+    },
+  };
+  const isSyncFailed = await helpers.getRootSyncState(123);
+  assert.strictEqual(isSyncFailed.statusCheckState, "error", `${label}: isSyncNote failure should fail closed`);
+  assert.match(isSyncFailed.statusCheckError, /isSyncNote_failed/, `${label}: isSyncNote failure should be explicit`);
+
+  global.Zotero = { debug() {}, BetterNotes: { api: { sync: { getSyncStatus: async () => null } } } };
+  const missingStatusAPI = await helpers.getRootSyncState(123);
+  assert.strictEqual(missingStatusAPI.statusCheckState, "error", `${label}: missing isSyncNote should fail closed`);
+  assert.match(missingStatusAPI.statusCheckError, /isSyncNote_unavailable/, `${label}: missing status API should be explicit`);
 }
 
 async function main() {
   await checkHelpers(
     "manual",
-    loadHelpers("scripts/actions-tags-bn-autosync-selected.js", "\nif (!Zotero.BetterNotes?.api?.$export?.syncMDBatch ||"),
+    loadHelpers("scripts/actions-tags-bn-autosync-selected.js", "\nif (\n  !Zotero.BetterNotes?.api?.$export?.syncMDBatch"),
   );
   await checkHelpers(
     "daemon",

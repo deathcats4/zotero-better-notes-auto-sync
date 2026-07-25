@@ -69,6 +69,7 @@ Common causes:
 - `ROOT_DIR` does not exist or is not writable.
 - Better Notes failed to convert the note to Markdown.
 - The note was already linked to a different root or belongs to another project, which is blocked by default as `cross_project_note_conflict`.
+- Better Notes sync status could not be checked through `getSyncStatus()` or `isSyncNote()`, reported as `sync_status_check_failed`.
 - Better Notes could not preflight a safe Markdown filename via `getMDFileName`, reported as `markdown_filename_precheck_unavailable`, `markdown_filename_precheck_failed`, or `unsafe_markdown_filename`.
 - The Markdown file status could not be checked due to permissions, offline network/sync disk, or IO failure, reported as `sync_file_check_failed`.
 - Better Notes auto-sync is disabled globally.
@@ -96,7 +97,8 @@ Fix:
 3. Confirm `getSyncStatus(noteID).path` exactly equals the configured `ROOT_DIR`, and its safe `filename` resolves to an existing file under that folder.
 4. Prefer creating a separate child note for the second project.
 5. For an intentional migration, temporarily set `ALLOW_CROSS_PROJECT_MIGRATION = true`, run the manual action once, then set it back to `false`.
-6. Review the old Markdown copy in the previous folder. The script does not delete or move it automatically because it may belong to another project.
+6. Confirm the note no longer has the old project's `Codex/BN-*` ownership tags or `codex-bn-sync:<OLD_PROJECT>:` marker. Successful migration clears those note-side markers automatically.
+7. Review the old Markdown copy in the previous folder. The script does not delete or move it automatically because it may belong to another project.
 
 ## Template note keeps duplicating after sync errors
 
