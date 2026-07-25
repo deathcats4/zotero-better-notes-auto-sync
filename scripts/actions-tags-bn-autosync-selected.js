@@ -187,7 +187,13 @@ function extractStatusFilename(status) {
 function isPathInRoot(statusPath) {
   const root = normalizePath(ROOT_DIR);
   const candidate = normalizePath(statusPath);
-  return candidate === root || candidate.startsWith(root + "\\");
+  return candidate === root;
+}
+
+function isFilePathInRoot(filePath) {
+  const root = normalizePath(ROOT_DIR);
+  const candidate = normalizePath(filePath);
+  return candidate.startsWith(root + "\\");
 }
 
 function hasUnsafeFilename(filename) {
@@ -216,7 +222,7 @@ function statusFullPath(status) {
 function isStatusFileInRoot(status) {
   const statusPath = extractStatusPath(status);
   const fullPath = statusFullPath(status);
-  return !!statusPath && !!fullPath && isPathInRoot(statusPath) && isPathInRoot(fullPath);
+  return !!statusPath && !!fullPath && isPathInRoot(statusPath) && isFilePathInRoot(fullPath);
 }
 
 async function getRootSyncState(noteId) {
@@ -259,7 +265,7 @@ async function syncNoteToRoot(noteItem) {
     return "already_linked";
   }
   if (before.isCorrectRoot && !before.fileExists && !RECREATE_MISSING_MARKDOWN) {
-    return "linked_missing_file";
+    throw new Error("sync_file_missing_recreate_disabled");
   }
   if (before.isAnySyncNote && !before.isCorrectRoot) {
     Zotero.debug("[Codex BN Sync] Note " + noteItem.key + " is linked outside this project root; re-registering without deleting the old Markdown copy.");
@@ -432,11 +438,29 @@ function hasMinimumReadingContent(noteItem, parentKey) {
   return html.includes(marker) && text.length > 40;
 }
 
+function hasAnyNoteContent(noteItem) {
+  const html = noteItem?.getNote?.() || "";
+  const text = html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 0;
+}
+
 async function getOrCreateReadingNote(parentItem) {
   const existing = findExistingCodexNote(parentItem);
   if (existing) {
     addTagOnce(existing, REVIEW_TAG);
     if (!hasMinimumReadingContent(existing, parentItem.key)) {
+      if (hasAnyNoteContent(existing)) {
+        ensureProjectMarker(existing, parentItem.key);
+        removeTagIfPresent(existing, INITIALIZING_TAG);
+        addTagOnce(existing, NOTE_TAG);
+        await existing.saveTx();
+        return { noteItem: existing, created: false, contentSource: "preserved_existing" };
+      }
       addTagOnce(existing, INITIALIZING_TAG);
       await applyTemplateOrFallback(parentItem, existing);
       removeTagIfPresent(existing, INITIALIZING_TAG);
@@ -581,7 +605,6 @@ for (const raw of selected) {
     }
 
     if (syncAction === "already_linked") stats.alreadyLinked += 1;
-    if (syncAction === "linked_missing_file") stats.alreadyLinked += 1;
     if (syncAction === "forced_refreshed") stats.refreshed += 1;
     if (syncAction === "recreated_missing_file") stats.recreatedMissing += 1;
     if (syncAction === "registered") stats.registered += 1;

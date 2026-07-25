@@ -57,7 +57,7 @@ For one paper or a small batch:
 5. Keep automatically generated claims at `review/needs-review`.
 6. Add `Codex/Queue/BN-Sync/<PROJECT_ID>` to the note or parent item.
 7. Let the Zotero-side queue daemon register it with Better Notes.
-8. Verify the queue tag disappeared, `Codex/BN-Synced/<PROJECT_ID>` appeared, no error tag remains, and Better Notes sync status `path + filename` points to an existing Markdown file under `ROOT_DIR`.
+8. Verify the queue tag disappeared, `Codex/BN-Synced/<PROJECT_ID>` appeared, no error tag remains, Better Notes sync status `path` exactly equals `ROOT_DIR`, and its safe `filename` points to an existing Markdown file under `ROOT_DIR`.
 
 Use `scripts/queue_zotero_items.py` when Codex only needs to add queue tags:
 
@@ -70,9 +70,9 @@ The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, `ZOTERO_API_KEY`, a
 
 ## State rules
 
-- Use `Codex/BN-Initializing/<PROJECT_ID>` while a newly created or recovered project note is being populated. Add `Codex/BN-Note/<PROJECT_ID>` only after the note has a marker and minimum reading-card content.
-- Add `Codex/BN-Synced/<PROJECT_ID>` only after Better Notes reports a safe `path + filename` under `ROOT_DIR` and the Markdown file exists.
-- On explicit queue/manual sync, clear stale project error comments and save the note before sync verification. If the note is already registered under `ROOT_DIR` and the Markdown file exists, do not call `syncMDBatch` by default; let Better Notes handle normal bidirectional sync to avoid overwriting Obsidian edits. Re-export only when the Markdown file is missing, the note is registered to another root, or `FORCE_EXPORT_EXISTING = true`.
+- Use `Codex/BN-Initializing/<PROJECT_ID>` while a newly created project note is being populated. For existing nonempty notes, never overwrite content just because the marker is missing or the text is short; add the project marker and tags in place. Only truly empty notes may be initialized with template/fallback content.
+- Add `Codex/BN-Synced/<PROJECT_ID>` only after Better Notes reports `path === ROOT_DIR`, a safe filename, and an existing Markdown file under `ROOT_DIR`.
+- On explicit queue/manual sync, clear stale project error comments and save the note before sync verification. If the note is already registered under `ROOT_DIR` and the Markdown file exists, do not call `syncMDBatch` by default; let Better Notes handle normal bidirectional sync to avoid overwriting Obsidian edits. Re-export only when the Markdown file is missing and `RECREATE_MISSING_MARKDOWN = true`, the note is registered to another root, or `FORCE_EXPORT_EXISTING = true`. If missing-file recreation is disabled, fail and keep the queue rather than marking success.
 - On failure, keep or restore `Codex/Queue/BN-Sync/<PROJECT_ID>`, add `Codex/BN-Sync-Error/<PROJECT_ID>`, remove the success tag, and preserve only a redacted short error message in the note comment if a note exists. Detailed local paths belong in `Zotero.debug`, not synced note content.
 - If Markdown sync succeeds but Zotero state save fails, restore the original queue-tag placement and surface `sync_succeeded_state_save_failed`.
 - On success, leave stale project error comments removed before export so Markdown does not receive old error markers.
@@ -100,7 +100,7 @@ After processing, check:
 - The note has `Codex/BN-Synced/<PROJECT_ID>`.
 - The note no longer has `Codex/Queue/BN-Sync/<PROJECT_ID>`.
 - The note does not have `Codex/BN-Sync-Error/<PROJECT_ID>`.
-- Better Notes `getSyncStatus(noteID).path + filename` is under `ROOT_DIR`.
+- Better Notes `getSyncStatus(noteID).path` exactly equals `ROOT_DIR`, the filename is safe, and the combined file exists under `ROOT_DIR`.
 - The Obsidian Markdown exists under `ROOT_DIR`.
 - The Markdown YAML contains `$itemKey` for the Zotero note key.
 - The first visible heading matches the paper/note title.

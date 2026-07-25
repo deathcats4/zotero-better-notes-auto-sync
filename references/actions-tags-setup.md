@@ -80,10 +80,10 @@ After running the manual action or daemon:
 - Zotero note has `Codex/BN-Note/<PROJECT_ID>`.
 - Zotero note no longer has `Codex/Queue/BN-Sync/<PROJECT_ID>`.
 - Zotero note does not have `Codex/BN-Sync-Error/<PROJECT_ID>`.
-- Better Notes `getSyncStatus(noteID).path + filename` resolves to an existing file under `ROOT_DIR`.
+- Better Notes `getSyncStatus(noteID).path` exactly equals `ROOT_DIR`, and its safe `filename` resolves to an existing file under `ROOT_DIR`.
 - A Markdown file exists under `ROOT_DIR`.
 - The Markdown YAML contains `$itemKey` matching the Zotero note key.
 
-If a note is already synced to this project root and its Markdown file exists, the selected action should report `alreadyLinked` and should not call `syncMDBatch`. If the Markdown file is missing, the script re-exports it. If it is synced to a different root, the script attempts to re-register it under the current `ROOT_DIR` and leaves any old Markdown copy for the user to review.
+If a note is already synced to this project root and its Markdown file exists, the selected action should report `alreadyLinked` and should not call `syncMDBatch`. If the Markdown file is missing, the script re-exports it when `RECREATE_MISSING_MARKDOWN = true`; otherwise it fails and preserves the queue state. If it is synced to a different root, the script attempts to re-register it under the current `ROOT_DIR` and leaves any old Markdown copy for the user to review.
 
 If Markdown sync succeeds but Zotero state saving fails, the script restores the original queue tag placement and reports `sync_succeeded_state_save_failed` so the item can be retried after the save problem is fixed.

@@ -90,13 +90,13 @@ Fix:
 
 1. Use a project-specific `PROJECT_ID`.
 2. Confirm the note has `Codex/BN-Note/<PROJECT_ID>` and `Codex/BN-Synced/<PROJECT_ID>`, not a generic success tag.
-3. Confirm `getSyncStatus(noteID).path + filename` resolves to an existing file under the configured `ROOT_DIR`.
+3. Confirm `getSyncStatus(noteID).path` exactly equals the configured `ROOT_DIR`, and its safe `filename` resolves to an existing file under that folder.
 4. Re-run the manual action; the script attempts to re-register notes whose sync status points to a different root.
 5. Review the old Markdown copy in the previous folder. The script does not delete or move it automatically because it may belong to another project.
 
 ## Template note keeps duplicating after sync errors
 
-The current scripts use `Codex/BN-Initializing/<PROJECT_ID>` while creating/recovering a note, then switch to `Codex/BN-Note/<PROJECT_ID>` only after content and marker are saved. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `INITIALIZING_TAG`.
+The current scripts use `Codex/BN-Initializing/<PROJECT_ID>` while creating a new note, then switch to `Codex/BN-Note/<PROJECT_ID>` only after content and marker are saved. For existing nonempty notes, the scripts preserve the current content and only append the project marker/tags if needed. If duplicates still appear, check whether the installed Actions & Tags script is an older copy that does not include `INITIALIZING_TAG`.
 
 Fix:
 
@@ -107,7 +107,7 @@ Fix:
 
 ## Re-queued note does not rewrite Markdown
 
-This is expected for already-linked notes. If `getSyncStatus(noteID).path + filename` points to an existing Markdown file under `ROOT_DIR`, the scripts default to `already_linked` and do not call `syncMDBatch`. This avoids overwriting Obsidian edits that Better Notes has not yet synced back to Zotero.
+This is expected for already-linked notes. If `getSyncStatus(noteID).path` exactly equals `ROOT_DIR` and its safe `filename` points to an existing Markdown file, the scripts default to `already_linked` and do not call `syncMDBatch`. This avoids overwriting Obsidian edits that Better Notes has not yet synced back to Zotero.
 
 Use one of these safer options:
 

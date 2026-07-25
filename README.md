@@ -45,6 +45,7 @@ pip install -r requirements.txt
 
 ```powershell
 python tests/static_checks.py
+node tests/safety_logic_checks.js
 ```
 
 ## 安装到 Codex
@@ -138,8 +139,9 @@ python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 -
 Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显式排队会先清除旧的项目错误 marker 并保存 note，然后检查 Better Notes sync status 的 `path + filename`：
 
 - 如果 note 尚未登记到当前 `ROOT_DIR`，脚本调用 `syncMDBatch()` 注册/导出。
-- 如果 note 已登记到当前 `ROOT_DIR` 且 Markdown 文件存在，默认不再调用 `syncMDBatch()`，避免覆盖 Obsidian 端尚未回写到 Zotero 的修改。
-- 如果 note 已登记但 Markdown 文件缺失，默认会重新导出以修复缺失文件。
+- 如果已有项目 note 非空但缺少 marker 或正文较短，脚本只补项目 marker 和标签，不用 fallback 覆盖原内容；只有真正空 note 才会被模板/fallback 初始化。
+- 如果 note 已登记到当前 `ROOT_DIR` 且 Markdown 文件存在，默认不再调用 `syncMDBatch()`，避免覆盖 Obsidian 端尚未回写到 Zotero 的修改。状态中的 `path` 必须严格等于 `ROOT_DIR`，不会接受 `ROOT_DIR\..\outside` 这类词法前缀路径。
+- 如果 note 已登记但 Markdown 文件缺失，默认会重新导出以修复缺失文件；如果你把 `RECREATE_MISSING_MARKDOWN` 改成 `false`，脚本会报错并保留队列，而不是贴成功标签。
 - 如果 note 已登记到其他目录，脚本会重新登记到当前目录，但不会自动删除旧目录中的旧 Markdown 副本。
 
 成功后：
@@ -149,7 +151,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显
 - 添加或保留 `Codex/BN-Note/PROJECT_ID`
 - 添加 `Codex/BN-Synced/PROJECT_ID`
 - 旧的错误 HTML marker 已在导出前清除，因此导出的 Markdown 不会携带历史错误 marker
-- 验证 Better Notes sync status 的 `path + filename` 组合后真实文件位于 `ROOT_DIR`
+- 验证 Better Notes sync status 中的 `path` 严格等于 `ROOT_DIR`，且安全 `filename` 拼出的真实文件位于 `ROOT_DIR`
 - 在 `ROOT_DIR` 下创建或更新 Better Notes 管理的 Markdown 文件
 
 失败时：
@@ -181,7 +183,7 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显
 - note 有 `Codex/BN-Synced/PROJECT_ID` 标签。
 - note 没有 `Codex/Queue/BN-Sync/PROJECT_ID` 标签。
 - note 没有 `Codex/BN-Sync-Error/PROJECT_ID` 标签。
-- Better Notes `getSyncStatus(noteID)` 中的 `path + filename` 组合后位于 `ROOT_DIR`，且文件存在。
+- Better Notes `getSyncStatus(noteID)` 中的 `path` 严格等于 `ROOT_DIR`，`filename` 不含路径分隔符、绝对路径或 `..`，组合后的文件存在。
 - `ROOT_DIR` 下存在对应 `.md` 文件。
 - Markdown YAML 中包含 `$itemKey`，并对应 Zotero note key。
 

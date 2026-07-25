@@ -48,10 +48,15 @@ def check_common(source: str, label: str, restore_call: str, mark_error_call: st
     assert_contains(source, "function extractStatusFilename", label)
     assert_contains(source, "function statusFullPath", label)
     assert_contains(source, "function isStatusFileInRoot", label)
+    assert_contains(source, "function isFilePathInRoot", label)
+    assert_contains(source, "return candidate === root;", label)
     assert_contains(source, "function pathExists", label)
+    assert_contains(source, "function hasAnyNoteContent", label)
     assert_contains(source, 'return "already_linked";', label)
     assert_contains(source, 'return "recreated_missing_file";', label)
+    assert_contains(source, 'throw new Error("sync_file_missing_recreate_disabled");', label)
     assert_order(source, "if (before.isCorrectRoot && before.fileExists && !FORCE_EXPORT_EXISTING)", "await Zotero.BetterNotes.api.$export.syncMDBatch", label)
+    assert_order(source, "if (hasAnyNoteContent(existing))", "await applyTemplateOrFallback(parentItem, existing);", label)
     assert_order(source, "statusFilename = extractStatusFilename(status);", "isCorrectRoot: isStatusFileInRoot(status)", label)
     assert_contains(source, "if (clearErrorComment(noteItem))", label)
     assert_order(source, "if (clearErrorComment(noteItem))", "const queueState = captureQueueState", label)
@@ -61,6 +66,7 @@ def check_common(source: str, label: str, restore_call: str, mark_error_call: st
     assert_not_contains(source, "Prefs.set", label)
     assert_not_contains(source, "observed=${observed}", label)
     assert_not_contains(source, "error.message || error", label)
+    assert_not_contains(source, 'return "linked_missing_file";', label)
 
 
 def main() -> int:
