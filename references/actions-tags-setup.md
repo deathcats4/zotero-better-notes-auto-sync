@@ -38,8 +38,12 @@ Edit constants near the top of each JS script before installing:
 ```js
 const PROJECT_ID = "axi-gold";
 const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\axi-gold";
-const TEMPLATE_NAME = "";
+const TEMPLATE_NAME = "[item]Codex 中英文献精读卡";
 ```
+
+Import the template from `templates/codex-literature-reading-card.better-notes.yml` first. See
+`references/better-notes-reading-card-template.md`. If you do not want Better Notes to generate
+the initial reading-card structure, leave `TEMPLATE_NAME = ""` and the bridge will use its built-in fallback.
 
 Keep this default unless you intentionally want Zotero note content to overwrite an existing Markdown file:
 

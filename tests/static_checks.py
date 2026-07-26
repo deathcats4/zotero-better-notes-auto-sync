@@ -13,6 +13,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANUAL = ROOT / "scripts" / "actions-tags-bn-autosync-selected.js"
 DAEMON = ROOT / "scripts" / "actions-tags-bn-queue-daemon.js"
+READING_CARD_TEMPLATE = ROOT / "templates" / "codex-literature-reading-card.better-notes.yml"
+READING_CARD_REFERENCE = ROOT / "references" / "better-notes-reading-card-template.md"
 
 
 def read(path: Path) -> str:
@@ -39,6 +41,7 @@ def assert_order(source: str, first: str, second: str, label: str) -> None:
 def check_common(source: str, label: str, restore_call: str, mark_error_call: str) -> None:
     assert_contains(source, "const NOTE_TAG = `Codex/BN-Note/${PROJECT_ID}`;", label)
     assert_contains(source, "const INITIALIZING_TAG = `Codex/BN-Initializing/${PROJECT_ID}`;", label)
+    assert_contains(source, 'const TEMPLATE_NAME = "[item]Codex 中英文献精读卡";', label)
     assert_contains(source, "const FORCE_EXPORT_EXISTING = false;", label)
     assert_contains(source, "const RECREATE_MISSING_MARKDOWN = true;", label)
     assert_contains(source, "const ALLOW_CROSS_PROJECT_MIGRATION = false;", label)
@@ -108,6 +111,32 @@ def check_common(source: str, label: str, restore_call: str, mark_error_call: st
     assert_not_contains(source, 'return "linked_missing_file";', label)
 
 
+def check_reading_card_template() -> None:
+    template = read(READING_CARD_TEMPLATE)
+    reference = read(READING_CARD_REFERENCE)
+
+    assert_contains(template, 'name: "[item]Codex 中英文献精读卡"', "reading-card template")
+    assert_contains(template, "// @use-markdown", "reading-card template")
+    assert_contains(template, "sharedObj.codexReadingCard", "reading-card template")
+    assert_contains(template, "targetNoteItem", "reading-card template")
+    assert_contains(template, "zotero://select/", "reading-card template")
+    assert_contains(template, "zotero://open-pdf/", "reading-card template")
+    for section in [
+        "## 1. 一句话定位",
+        "## 2. 摘要与研究问题",
+        "## 3. 方法与数据",
+        "## 4. 核心结论",
+        "## 5. 证据候选表",
+        "## 6. 标注与摘录整理",
+        "## 7. 我的判断",
+        "## 8. 待人工复核",
+        "## 9. Codex 状态",
+    ]:
+        assert_contains(template, section, "reading-card template")
+    assert_contains(reference, "[item]Codex 中英文献精读卡", "reading-card reference")
+    assert_contains(reference, "const TEMPLATE_NAME = \"[item]Codex 中英文献精读卡\";", "reading-card reference")
+
+
 def main() -> int:
     manual = read(MANUAL)
     daemon = read(DAEMON)
@@ -141,6 +170,7 @@ def main() -> int:
     assert_contains(daemon, "daemon (re)started", "daemon")
     assert_contains(daemon, "processQueueOnce failed", "daemon")
     assert_not_contains(daemon, "globalThis.__codexBNQueueBusy = true", "daemon")
+    check_reading_card_template()
     print("Static checks passed.")
     return 0
 

@@ -1,0 +1,272 @@
+# This template is for importing into Better Notes:
+# copy this whole file content, then in Zotero use Tools -> New Template from Clipboard.
+# Do not paste only the `content` block into the Better Notes template editor.
+name: "[item]Codex 中英文献精读卡"
+content: |-
+  // @use-markdown
+  ${{
+    if (!sharedObj.codexReadingCard) {
+      const field = (item, key) => {
+        try {
+          return item?.getField?.(key) || "";
+        } catch (_e) {
+          return "";
+        }
+      };
+
+      const text = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const tableText = (value) => text(value).replace(/\|/g, "\\|");
+      const datePart = (value) => text(value).split("T")[0];
+
+      const creators = (item) => {
+        try {
+          const all = item?.getCreators?.() || [];
+          const names = all
+            .slice(0, 12)
+            .map((creator) => text([creator.firstName, creator.lastName].filter(Boolean).join(" ")) || text(creator.name))
+            .filter(Boolean);
+          return names.join("; ") + (all.length > 12 ? "; et al." : "");
+        } catch (_e) {
+          return "";
+        }
+      };
+
+      const tags = (item) => {
+        try {
+          return (item?.getTags?.() || []).map((tag) => tag.tag).filter(Boolean).join(", ");
+        } catch (_e) {
+          return "";
+        }
+      };
+
+      const extraCitationKey = (item) => {
+        const match = field(item, "extra").match(/Citation Key:\s*(.+?)(\n|$)/i);
+        return match ? text(match[1]) : "";
+      };
+
+      const citekey = (item) => text(item?.citationKey || field(item, "citationKey") || extraCitationKey(item));
+
+      const librarySegment = (item) => {
+        try {
+          const library = Zotero.Libraries.get(item.libraryID);
+          if (library?.libraryType === "user") return "library";
+          const groupID = library?.groupID || library?.id;
+          return groupID ? `groups/${groupID}` : "library";
+        } catch (_e) {
+          return "library";
+        }
+      };
+
+      const zoteroSelectLink = (item) => {
+        if (!item?.key) return "";
+        return `zotero://select/${librarySegment(item)}/items/${item.key}`;
+      };
+
+      const bestPdfAttachment = async (item) => {
+        try {
+          if (typeof item?.getBestAttachment === "function") {
+            const attachment = await item.getBestAttachment();
+            if (attachment?.isPDFAttachment?.() || attachment?.attachmentContentType === "application/pdf") return attachment;
+          }
+        } catch (_e) {}
+
+        try {
+          if (typeof item?.getBestAttachments === "function") {
+            const attachments = await item.getBestAttachments();
+            const pdf = (attachments || []).find((att) => att?.isPDFAttachment?.() || att?.attachmentContentType === "application/pdf");
+            if (pdf) return pdf;
+          }
+        } catch (_e) {}
+
+        try {
+          const attachments = Zotero.Items.get(item?.getAttachments?.() || []);
+          return (attachments || []).find((att) => att?.isPDFAttachment?.() || att?.attachmentContentType === "application/pdf") || null;
+        } catch (_e) {
+          return null;
+        }
+      };
+
+      const pdfLink = async (item) => {
+        const pdf = await bestPdfAttachment(item);
+        if (!pdf?.key) return "";
+        return `zotero://open-pdf/${librarySegment(pdf)}/items/${pdf.key}`;
+      };
+
+      const mdLink = (label, href) => {
+        const safeLabel = text(label);
+        const safeHref = text(href);
+        return safeHref ? `[${safeLabel || safeHref}](${safeHref})` : "";
+      };
+
+      sharedObj.codexReadingCard = {
+        field,
+        text,
+        tableText,
+        datePart,
+        creators,
+        tags,
+        citekey,
+        zoteroSelectLink,
+        pdfLink,
+        mdLink,
+      };
+    }
+    return "";
+  }}$
+
+  # ${sharedObj.codexReadingCard.text(sharedObj.codexReadingCard.field(topItem, "title")) || "Untitled Zotero Item"}
+
+  > [!info] 文献信息
+  > - **原题名**：${sharedObj.codexReadingCard.text(sharedObj.codexReadingCard.field(topItem, "title"))}
+  > - **中文题名 / 译名**：${sharedObj.codexReadingCard.text(sharedObj.codexReadingCard.field(topItem, "titleTranslation"))}
+  > - **作者**：${sharedObj.codexReadingCard.creators(topItem)}
+  > - **年份**：${sharedObj.codexReadingCard.datePart(sharedObj.codexReadingCard.field(topItem, "date"))}
+  > - **期刊 / 来源**：${sharedObj.codexReadingCard.text(sharedObj.codexReadingCard.field(topItem, "publicationTitle") || sharedObj.codexReadingCard.field(topItem, "proceedingsTitle") || sharedObj.codexReadingCard.field(topItem, "bookTitle"))}
+  > - **DOI**：${sharedObj.codexReadingCard.mdLink(sharedObj.codexReadingCard.field(topItem, "DOI"), sharedObj.codexReadingCard.field(topItem, "DOI") ? "https://doi.org/" + sharedObj.codexReadingCard.field(topItem, "DOI") : "")}
+  > - **URL**：${sharedObj.codexReadingCard.mdLink(sharedObj.codexReadingCard.field(topItem, "url"), sharedObj.codexReadingCard.field(topItem, "url"))}
+  > - **Zotero 条目**：${sharedObj.codexReadingCard.mdLink(topItem.key, sharedObj.codexReadingCard.zoteroSelectLink(topItem))}
+  > - **PDF**：${sharedObj.codexReadingCard.mdLink("打开 PDF", await sharedObj.codexReadingCard.pdfLink(topItem))}
+  > - **Citekey**：${sharedObj.codexReadingCard.citekey(topItem)}
+  > - **Zotero 标签**：${sharedObj.codexReadingCard.tags(topItem)}
+  > - **建卡日期**：${new Date().toLocaleDateString()}
+
+  ## 1. 一句话定位
+
+  **这篇文献主要研究什么？**
+
+  - needs_review
+
+  **它和当前项目有什么关系？**
+
+  - needs_review
+
+  **适合归入哪个问题域？**
+
+  - [ ] 成矿背景
+  - [ ] 流体来源
+  - [ ] 物质来源
+  - [ ] 年代学
+  - [ ] 构造控矿
+  - [ ] 矿物学
+  - [ ] 地球化学
+  - [ ] 方法参考
+  - [ ] 其他
+
+  ## 2. 摘要与研究问题
+
+  ### 原始摘要
+
+  > ${sharedObj.codexReadingCard.text(sharedObj.codexReadingCard.field(topItem, "abstractNote")) || "无摘要。"}
+
+  ### AI / 人工摘要
+
+  - needs_review
+
+  ### 作者试图解决的问题
+
+  1. needs_review
+  2. needs_review
+  3. needs_review
+
+  ### 研究对象与区域
+
+  | 字段 | 内容 | 审核状态 |
+  |---|---|---|
+  | 研究区 | needs_review | needs_review |
+  | 矿床 / 样品对象 | needs_review | needs_review |
+  | 地质背景 | needs_review | needs_review |
+  | 核心数据类型 | 年代学 / 主微量元素 / 同位素 / 流体包裹体 / 矿物学 / 遥感 / 其他 | needs_review |
+
+  ## 3. 方法与数据
+
+  | 模块 | 内容 | 可靠性 / 注意事项 |
+  |---|---|---|
+  | 样品来源 | needs_review | needs_review |
+  | 分析方法 | needs_review | needs_review |
+  | 关键指标 | needs_review | needs_review |
+  | 数据限制 | needs_review | needs_review |
+
+  ## 4. 核心结论
+
+  ### 作者结论
+
+  1. needs_review
+  2. needs_review
+  3. needs_review
+
+  ### 对当前项目有用的结论
+
+  1. needs_review
+  2. needs_review
+
+  ### 需要谨慎使用的结论
+
+  - needs_review
+
+  ## 5. 证据候选表
+
+  > 这里不是最终论文证据，只是候选材料。所有条目默认 `needs_review`，人工核对页码、图表和原文后才能升级。
+
+  | evidence_id | 证据摘录 / 数据 | 位置 | 支持的论点 | Zotero 深链 | 审核状态 |
+  |---|---|---|---|---|---|
+  | EVD-${topItem.key}-001 | needs_review | p. ? / Fig. ? / Table ? | needs_review | ${sharedObj.codexReadingCard.mdLink("PDF", await sharedObj.codexReadingCard.pdfLink(topItem))} | needs_review |
+
+  ## 6. 标注与摘录整理
+
+  ### 重要摘录
+
+  > needs_review
+  >
+  > 来源：p. ? / Fig. ? / Table ? / Zotero 深链待补充
+
+  ### 作者原话值得保留的表述
+
+  > needs_review
+
+  ### 可能进入证据矩阵的材料
+
+  - needs_review
+
+  ## 7. 我的判断
+
+  ### 这篇文献可靠在哪里？
+
+  - needs_review
+
+  ### 它和已有认识是否一致？
+
+  - 一致点：needs_review
+  - 冲突点：needs_review
+  - 可能原因：needs_review
+
+  ### 对当前项目的启发
+
+  - needs_review
+
+  ### 后续要查的文献 / 数据
+
+  - needs_review
+
+  ## 8. 待人工复核
+
+  - [ ] 页码、图号、表号是否准确。
+  - [ ] DOI、期刊、年份是否准确。
+  - [ ] 关键术语翻译是否准确。
+  - [ ] 数据单位是否一致。
+  - [ ] 是否区分了作者结论、数据证据和我的解释。
+  - [ ] 是否有必要回看 PDF 原文。
+  - [ ] 是否可以进入正式 Evidence Matrix。
+
+  ## 9. Codex 状态
+
+  ```yaml
+  codex_project_id: "filled_by_actions_tags"
+  zotero_item_key: "${topItem.key}"
+  zotero_note_key: "${(typeof targetNoteItem !== "undefined" && targetNoteItem?.key) ? targetNoteItem.key : "filled_after_insert"}"
+  better_notes_template: "[item]Codex 中英文献精读卡"
+  review_status: "needs_review"
+  last_ai_pass: "${new Date().toISOString().split("T")[0]}"
+  sync_target: "filled_by_actions_tags"
+  ```
+
+  <!-- codex-reading-card-template:v1; item:${topItem.key} -->

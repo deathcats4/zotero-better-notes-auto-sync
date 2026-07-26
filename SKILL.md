@@ -32,7 +32,7 @@ When installing or repairing the Zotero-side bridge, read `references/actions-ta
 3. Edit each JS script's constants before installing:
    - `PROJECT_ID`
    - `ROOT_DIR`
-   - optional `TEMPLATE_NAME`
+   - `TEMPLATE_NAME`, preferably `[item]Codex 中英文献精读卡` after importing `templates/codex-literature-reading-card.better-notes.yml`
    - optional `LIBRARY_IDS` in the daemon for group libraries or multiple libraries.
 4. Install the script through Actions & Tags, or edit Zotero `prefs.js` only when Zotero is closed and after backing it up.
 5. Ask the user to manually confirm Better Notes linked-note auto-sync is enabled. Do not silently set `extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes` from a script.
@@ -46,14 +46,17 @@ For one paper or a small batch:
 1. Resolve the Zotero source from a collection, title, or key.
 2. Fetch metadata, existing child notes, annotations, and local PDF/full text where available.
 3. Reuse an existing project-scoped Codex/Better Notes reading note if one exists; otherwise create one child note under the parent item.
-4. Write a concise reading card in the Zotero note:
-   - metadata
-   - one-sentence positioning
-   - paper overview
-   - your interpretation
-   - dated reading pass
-   - candidate evidence table
-   - review limitations and next checks
+4. Write or revise the reading card using the `[item]Codex 中英文献精读卡` structure:
+   - 文献信息
+   - 一句话定位
+   - 摘要与研究问题
+   - 方法与数据
+   - 核心结论
+   - 证据候选表
+   - 标注与摘录整理
+   - 我的判断
+   - 待人工复核
+   - Codex 状态
 5. Keep automatically generated claims at `review/needs-review`.
 6. Add `Codex/Queue/BN-Sync/<PROJECT_ID>` to the note or parent item.
 7. Let the Zotero-side queue daemon register it with Better Notes.
@@ -67,6 +70,13 @@ python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 -
 ```
 
 The script reads `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, `ZOTERO_API_KEY`, and optionally `ZOTERO_BN_PROJECT_ID` from the environment.
+
+Use `scripts/export_zotero_evidence_pack.py` when Codex needs to read existing Zotero child notes and PDF annotations before writing or revising a reading card. It exports AI-readable JSON/Markdown evidence with stable `evidence_id` values and Zotero PDF deep links, but it does not write Zotero, call Better Notes, or modify Obsidian files.
+
+```bash
+python scripts/export_zotero_evidence_pack.py ITEM_KEY --format markdown
+python scripts/export_zotero_evidence_pack.py --all-top --limit 50 --only-annotated --summary
+```
 
 ## State rules
 
@@ -119,7 +129,10 @@ If anything fails, read `references/troubleshooting.md`.
 - `scripts/actions-tags-bn-autosync-selected.js`: manual selected item/note sync action.
 - `scripts/actions-tags-bn-queue-daemon.js`: automatic queue consumer for Zotero startup.
 - `scripts/queue_zotero_items.py`: pyzotero helper to add project-scoped queue tags.
+- `scripts/export_zotero_evidence_pack.py`: pyzotero helper to read metadata, child notes, and PDF annotations for AI evidence retrieval.
+- `templates/codex-literature-reading-card.better-notes.yml`: Better Notes item template for `[item]Codex 中英文献精读卡`.
 - `references/actions-tags-setup.md`: install and configuration details.
+- `references/better-notes-reading-card-template.md`: reading-card template import and usage instructions.
 - `references/troubleshooting.md`: common failure modes and fixes.
 - `COMPATIBILITY.md`: locally verified Zotero/plugin/pyzotero versions and API assumptions.
 - `tests/static_checks.py`: lightweight static regression checks for critical state-machine invariants.

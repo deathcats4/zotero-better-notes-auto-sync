@@ -23,7 +23,7 @@
 // Use Windows native backslashes, not D:/forward/slashes.
 const PROJECT_ID = "PROJECT_NAME";
 const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\PROJECT_NAME";
-const TEMPLATE_NAME = ""; // Optional Better Notes item template name, e.g. "[item]Project Reading Card".
+const TEMPLATE_NAME = "[item]Codex 中英文献精读卡"; // Better Notes item template name.
 
 // Empty means personal library only. For group support, put Zotero internal library IDs here.
 // Example: const LIBRARY_IDS = [Zotero.Libraries.userLibraryID, 1234567];
@@ -176,12 +176,19 @@ async function saveChangedItems(itemsToSave) {
 }
 
 async function ensureDir(path) {
-  if (typeof IOUtils !== "undefined" && IOUtils.makeDirectory) {
-    await IOUtils.makeDirectory(path, { ignoreExisting: true });
-    return;
+  const existing = await pathExists(path);
+  if (existing.state === "exists") return;
+
+  try {
+    if (typeof IOUtils !== "undefined" && IOUtils.makeDirectory) {
+      await IOUtils.makeDirectory(path, { ignoreExisting: true });
+      return;
+    }
+    const { OS } = ChromeUtils.importESModule("chrome://zotero/content/osfile.mjs");
+    await OS.File.makeDir(path, { from: null, ignoreExisting: true });
+  } catch (e) {
+    Zotero.debug("[Codex BN Queue] Could not ensure ROOT_DIR exists; continuing so Better Notes can handle the path: " + shortErrorMessage(e));
   }
-  const { OS } = ChromeUtils.importESModule("chrome://zotero/content/osfile.mjs");
-  await OS.File.makeDir(path, { from: null, ignoreExisting: true });
 }
 
 async function pathExists(path) {

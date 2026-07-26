@@ -16,5 +16,10 @@ __pycache__/
 *.bak
 *.zip
 
+evidence-pack-*.json
+evidence-pack-*.md
+evidence-query-*.json
+evidence-query-*.md
+
 node_modules/
 
