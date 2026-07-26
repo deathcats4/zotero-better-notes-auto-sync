@@ -5,8 +5,8 @@ This repository is the long-term GitHub development checkout for the Zotero Bett
 ## Repository identity
 
 - GitHub remote: https://github.com/deathcats4/zotero-better-notes-auto-sync
-- Local development path: `D:\zotero-better-notes-auto-sync`
-- Installed Codex skill copy: `C:\Users\Dqm\.codex\skills\zotero-better-notes-obsidian-sync`
+- Local development checkout: use this repository, not an installed skill copy.
+- Installed Codex skill copy: keep machine-specific install paths in `AGENTS.local.md`.
 - Do not use the installed skill copy as the development workspace. Develop here, then update the installed copy only after review/merge or explicit user approval.
 
 ## Current workflow policy
@@ -43,17 +43,11 @@ Important safety choices already made:
 - Zotero backlink blocks are project-scoped and should be idempotent.
 - `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC` is experimental and defaults to `false`; queue processing must stay higher priority than linked-note rechecks.
 
-## Local user project values used in testing
+## Local machine notes
 
-Do not hardcode these into generic documentation unless explicitly asked, but they are useful context for local testing:
-
-- Project ID: `axi-gold`
-- Better Notes / Obsidian sync root: `D:\科研知识库\BetterNotesSync\阿希金矿`
-- Common template name: `[item]阿希金矿阅读卡`
-- Zotero data directory: `D:\Zotero\ZoteroData`
-- Zotero profile prefs path: `C:\Users\Dqm\AppData\Roaming\Zotero\Zotero\Profiles\o1onaen4.default\prefs.js`
-
-Only edit Zotero `prefs.js` when Zotero is closed, and back it up first.
+- Keep personal project IDs, Better Notes roots, Zotero data directories, profile paths, and template names in `AGENTS.local.md`.
+- `AGENTS.local.md` is ignored by git and should not be committed.
+- Only edit Zotero `prefs.js` when Zotero is closed, and back it up first.
 
 ## Validation commands
 

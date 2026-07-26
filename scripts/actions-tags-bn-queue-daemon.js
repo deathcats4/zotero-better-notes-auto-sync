@@ -49,12 +49,14 @@ const CODEX_ERROR_TAG_PREFIX = "Codex/BN-Sync-Error/";
 const CODEX_INITIALIZING_TAG_PREFIX = "Codex/BN-Initializing/";
 const CODEX_MARKER_PROJECT_RE = /codex-bn-sync:([^:\s<>]+):/g;
 const LINKS_MARKER_PROJECT_RE = /codex-zotero-links:([^:\s<>]+):/g;
+const LINKS_BLOCK_PROJECT_RE = /data-codex-zotero-links="([^"]+)"/g;
 const POLL_SECONDS = 10;
 const MAX_PER_TICK = 8;
 const ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC = false; // Experimental. Queue processing is safer and always has priority.
 const LINKED_NOTE_AUTOSYNC_MAX_PER_TICK = 5;
 const LINKED_NOTE_AUTOSYNC_TIMEOUT_MS = 12000;
 const LINKED_NOTE_AUTOSYNC_COOLDOWN_MS = 5 * 60 * 1000;
+const LINKED_NOTE_AUTOSYNC_RECHECK_MS = 60 * 1000;
 const SKIP_ERROR_TAGGED_ITEMS = true;
 const DAEMON_KEY = `codexBNQueue:${PROJECT_ID}`;
 
@@ -304,6 +306,10 @@ function otherProjectOwnershipTokens(noteItem) {
     const markerProject = match[1];
     if (markerProject && markerProject !== PROJECT_ID) conflicts.push(`links:${markerProject}`);
   }
+  for (const match of html.matchAll(LINKS_BLOCK_PROJECT_RE)) {
+    const blockProject = match[1];
+    if (blockProject && blockProject !== PROJECT_ID) conflicts.push(`links:${blockProject}`);
+  }
   return [...new Set(conflicts)];
 }
 
@@ -325,6 +331,16 @@ function removeOtherProjectTagPrefixes(zoteroItem) {
   }
 }
 
+function stripOtherProjectZoteroLinksBlocks(html) {
+  return String(html || "").replace(
+    /<div\b[^>]*data-codex-zotero-links="([^"]+)"[^>]*>[\s\S]*?<\/div>\s*/g,
+    (block, blockProject) => {
+      const hasOtherProjectMarker = [...block.matchAll(LINKS_MARKER_PROJECT_RE)].some((match) => match[1] && match[1] !== PROJECT_ID);
+      return blockProject === PROJECT_ID && !hasOtherProjectMarker ? block : "";
+    },
+  );
+}
+
 function clearOtherProjectOwnership(noteItem) {
   if (!noteItem?.isNote?.()) return false;
   removeOtherProjectTagPrefixes(noteItem);
@@ -332,13 +348,8 @@ function clearOtherProjectOwnership(noteItem) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p>\\s*<!--\\s*codex-bn-sync:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*</p>\\s*`, "g");
   const bareMarkerRegex = new RegExp(`<!--\\s*codex-bn-sync:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*`, "g");
-  const otherProjectLinksBlockRegex = new RegExp(
-    `<div\\b[^>]*data-codex-zotero-links="(?!${escapeRegExp(PROJECT_ID)}")[^"]*"[^>]*>[\\s\\S]*?<!--\\s*codex-zotero-links:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->[\\s\\S]*?</div>\\s*`,
-    "g",
-  );
   const bareLinksMarkerRegex = new RegExp(`<!--\\s*codex-zotero-links:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*`, "g");
-  const cleaned = html
-    .replace(otherProjectLinksBlockRegex, "")
+  const cleaned = stripOtherProjectZoteroLinksBlocks(html)
     .replace(markerRegex, "")
     .replace(bareMarkerRegex, "")
     .replace(bareLinksMarkerRegex, "");
@@ -867,6 +878,18 @@ function ensureLinkedNoteAutosyncState() {
   ) {
     globalThis.__codexBNLinkedNoteAutosyncCursors = new Map();
   }
+  if (
+    !globalThis.__codexBNLinkedNoteAutosyncAttempts ||
+    typeof globalThis.__codexBNLinkedNoteAutosyncAttempts.get !== "function"
+  ) {
+    globalThis.__codexBNLinkedNoteAutosyncAttempts = new Map();
+  }
+  if (
+    !globalThis.__codexBNLinkedNoteAutosyncTimedOut ||
+    typeof globalThis.__codexBNLinkedNoteAutosyncTimedOut.get !== "function"
+  ) {
+    globalThis.__codexBNLinkedNoteAutosyncTimedOut = new Map();
+  }
 }
 
 function activeVisibleNoteIds() {
@@ -890,6 +913,15 @@ function linkedNoteAutosyncCooldownKey(noteItem) {
   return `${PROJECT_ID}:${noteItem.libraryID}:${noteItem.id}`;
 }
 
+function linkedNoteAutosyncTimedOutKey(noteItem) {
+  return `${PROJECT_ID}:${noteItem.libraryID}:${noteItem.id}`;
+}
+
+function linkedNoteAutosyncHasPendingTimeouts() {
+  ensureLinkedNoteAutosyncState();
+  return globalThis.__codexBNLinkedNoteAutosyncTimedOut.size > 0;
+}
+
 function linkedNoteAutosyncIsCoolingDown(noteItem, nowMs) {
   ensureLinkedNoteAutosyncState();
   const cooldowns = globalThis.__codexBNLinkedNoteAutosyncCooldowns;
@@ -907,6 +939,42 @@ function putLinkedNoteAutosyncCooldown(noteItem, reason) {
     untilMs: Date.now() + LINKED_NOTE_AUTOSYNC_COOLDOWN_MS,
     reason,
   });
+}
+
+function linkedNoteAutosyncIsRecentlyAttempted(noteItem, nowMs) {
+  ensureLinkedNoteAutosyncState();
+  const attempts = globalThis.__codexBNLinkedNoteAutosyncAttempts;
+  const key = linkedNoteAutosyncCooldownKey(noteItem);
+  const entry = attempts.get(key);
+  if (!entry) return false;
+  if (entry.untilMs > nowMs) return true;
+  attempts.delete(key);
+  return false;
+}
+
+function putLinkedNoteAutosyncAttempt(noteItem, reason) {
+  ensureLinkedNoteAutosyncState();
+  globalThis.__codexBNLinkedNoteAutosyncAttempts.set(linkedNoteAutosyncCooldownKey(noteItem), {
+    untilMs: Date.now() + LINKED_NOTE_AUTOSYNC_RECHECK_MS,
+    reason,
+  });
+}
+
+function trackTimedOutLinkedNoteAutosync(noteItem, syncPromise) {
+  ensureLinkedNoteAutosyncState();
+  const key = linkedNoteAutosyncTimedOutKey(noteItem);
+  globalThis.__codexBNLinkedNoteAutosyncTimedOut.set(key, {
+    startedMs: Date.now(),
+    noteKey: noteItem.key || "",
+  });
+  syncPromise
+    .catch((e) => {
+      Zotero.debug("[Codex BN Queue] Timed-out linked-note autosync later failed for " + (noteItem.key || noteItem.id) + ": " + shortErrorMessage(e));
+    })
+    .finally(() => {
+      ensureLinkedNoteAutosyncState();
+      globalThis.__codexBNLinkedNoteAutosyncTimedOut.delete(key);
+    });
 }
 
 function rotateLinkedNoteAutosyncCandidates(candidates) {
@@ -944,8 +1012,10 @@ function emptyLinkedNoteAutosyncStats(enabled = ENABLE_PROJECT_LINKED_NOTE_AUTOS
     skippedUnsafe: 0,
     skippedWrongRoot: 0,
     skippedCooldown: 0,
+    skippedRecent: 0,
     failed: 0,
     timedOut: 0,
+    suspended: false,
     unavailable: false,
   };
 }
@@ -973,13 +1043,14 @@ async function getProjectLinkedNotesForAutosync() {
   const libraryIDs = LIBRARY_IDS.length ? LIBRARY_IDS : [Zotero.Libraries.userLibraryID];
   const activeIds = activeVisibleNoteIds();
   if (!activeIds) {
-    return { notes: [], skippedActive: 0, skippedUnsafe: 1, skippedWrongRoot: 0, skippedCooldown: 0 };
+    return { notes: [], skippedActive: 0, skippedUnsafe: 1, skippedWrongRoot: 0, skippedCooldown: 0, skippedRecent: 0 };
   }
   const candidates = [];
   let skippedActive = 0;
   let skippedUnsafe = 0;
   let skippedWrongRoot = 0;
   let skippedCooldown = 0;
+  let skippedRecent = 0;
   const nowMs = Date.now();
 
   for (const libraryID of libraryIDs) {
@@ -1013,6 +1084,10 @@ async function getProjectLinkedNotesForAutosync() {
           skippedCooldown += 1;
           continue;
         }
+        if (linkedNoteAutosyncIsRecentlyAttempted(noteItem, nowMs)) {
+          skippedRecent += 1;
+          continue;
+        }
         candidates.push(noteItem);
       } catch (e) {
         skippedUnsafe += 1;
@@ -1021,7 +1096,7 @@ async function getProjectLinkedNotesForAutosync() {
     }
   }
 
-  return { notes: rotateLinkedNoteAutosyncCandidates(candidates), skippedActive, skippedUnsafe, skippedWrongRoot, skippedCooldown };
+  return { notes: rotateLinkedNoteAutosyncCandidates(candidates), skippedActive, skippedUnsafe, skippedWrongRoot, skippedCooldown, skippedRecent };
 }
 
 async function runProjectLinkedNoteAutosync() {
@@ -1034,32 +1109,42 @@ async function runProjectLinkedNoteAutosync() {
     Zotero.debug("[Codex BN Queue] Better Notes onSyncing hook unavailable; linked-note autosync skipped.");
     return { ...stats, enabled: true, unavailable: true };
   }
+  if (linkedNoteAutosyncHasPendingTimeouts()) {
+    return { ...stats, enabled: true, suspended: true };
+  }
 
-  const { notes, skippedActive, skippedUnsafe, skippedWrongRoot, skippedCooldown } = await getProjectLinkedNotesForAutosync();
+  const { notes, skippedActive, skippedUnsafe, skippedWrongRoot, skippedCooldown, skippedRecent } = await getProjectLinkedNotesForAutosync();
   stats.skippedActive = skippedActive;
   stats.skippedUnsafe = skippedUnsafe;
   stats.skippedWrongRoot = skippedWrongRoot;
   stats.skippedCooldown = skippedCooldown;
+  stats.skippedRecent = skippedRecent;
   if (!notes.length) return stats;
 
   for (const noteItem of notes) {
+    let syncPromise = null;
     try {
-      await withTimeout(
+      putLinkedNoteAutosyncAttempt(noteItem, "started");
+      syncPromise = withNoteLock(noteItem, () =>
         onSyncing([noteItem], {
           quiet: true,
           skipActive: true,
           reason: `codex-project-linked-note-autosync:${PROJECT_ID}`,
         }),
+      );
+      stats.attempted += 1;
+      await withTimeout(
+        syncPromise,
         LINKED_NOTE_AUTOSYNC_TIMEOUT_MS,
         "linked_note_autosync_timeout",
       );
-      stats.attempted += 1;
     } catch (e) {
       stats.failed += 1;
       putLinkedNoteAutosyncCooldown(noteItem, shortErrorMessage(e));
       Zotero.debug("[Codex BN Queue] Linked-note autosync failed for " + (noteItem.key || noteItem.id) + ": " + shortErrorMessage(e));
       if (isLinkedNoteAutosyncTimeout(e)) {
         stats.timedOut += 1;
+        if (syncPromise) trackTimedOutLinkedNoteAutosync(noteItem, syncPromise);
         break;
       }
     }
@@ -1169,11 +1254,13 @@ async function processQueueOnce() {
         linkedAutosync.skippedUnsafe ||
         linkedAutosync.skippedWrongRoot ||
         linkedAutosync.skippedCooldown ||
+        linkedAutosync.skippedRecent ||
         linkedAutosync.failed ||
-        linkedAutosync.timedOut
+        linkedAutosync.timedOut ||
+        linkedAutosync.suspended
       ) {
         Zotero.debug(
-          `[Codex BN Queue] no queued items; linkedAutosyncAttempted=${linkedAutosync.attempted}; linkedAutosyncFailed=${linkedAutosync.failed}; linkedAutosyncTimedOut=${linkedAutosync.timedOut}; skippedActive=${linkedAutosync.skippedActive}; skippedUnsafe=${linkedAutosync.skippedUnsafe}; skippedWrongRoot=${linkedAutosync.skippedWrongRoot}; skippedCooldown=${linkedAutosync.skippedCooldown}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
+          `[Codex BN Queue] no queued items; linkedAutosyncAttempted=${linkedAutosync.attempted}; linkedAutosyncFailed=${linkedAutosync.failed}; linkedAutosyncTimedOut=${linkedAutosync.timedOut}; linkedAutosyncSuspended=${linkedAutosync.suspended}; skippedActive=${linkedAutosync.skippedActive}; skippedUnsafe=${linkedAutosync.skippedUnsafe}; skippedWrongRoot=${linkedAutosync.skippedWrongRoot}; skippedCooldown=${linkedAutosync.skippedCooldown}; skippedRecent=${linkedAutosync.skippedRecent}; autoSyncPref=${autoSyncPrefStatus}; project=${PROJECT_ID}; root=${ROOT_DIR}`,
         );
       }
       return;

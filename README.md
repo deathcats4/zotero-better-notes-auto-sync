@@ -71,8 +71,8 @@ Use $zotero-better-notes-obsidian-sync ...
 打开下面两个脚本之一，把顶部常量改成你的项目值：
 
 ```js
-const PROJECT_ID = "axi-gold";
-const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\axi-gold";
+const PROJECT_ID = "your-project-id";
+const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\your-project-id";
 const TEMPLATE_NAME = "";
 ```
 
@@ -114,7 +114,7 @@ extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes
 
 如果它是关闭状态，脚本仍可调用 `syncMDBatch` 做注册/导出，但后续 Zotero note 与 Markdown 的周期性双向同步可能不会自动运行。
 
-queue daemon 的核心职责是处理新队列：创建/复用阅读卡、注册 Better Notes Markdown 同步、补 Zotero 回链。已绑定阅读卡的主动复查属于实验功能，默认关闭；如果你手动打开 `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC`，它只会在新队列为空时尝试，并且保持 Better Notes 的 active note 保护。
+queue daemon 的核心职责是处理新队列：创建/复用阅读卡、注册 Better Notes Markdown 同步、补 Zotero 回链。已绑定阅读卡的主动复查属于实验功能，默认关闭；如果你手动打开 `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC`，它只会在新队列为空时尝试，并且保持 Better Notes 的 active note 保护。实验复查会逐条调用 Better Notes；如果一次调用超时，本次 Zotero 会话会暂停后续主动复查，直到原始 Better Notes Promise 真正结束。
 
 ## 配置 pyzotero
 
@@ -124,7 +124,7 @@ queue daemon 的核心职责是处理新队列：创建/复用阅读卡、注册
 $env:ZOTERO_LIBRARY_ID="your-library-id"
 $env:ZOTERO_LIBRARY_TYPE="user"
 $env:ZOTERO_API_KEY="your-zotero-api-key"
-$env:ZOTERO_BN_PROJECT_ID="axi-gold"
+$env:ZOTERO_BN_PROJECT_ID="your-project-id"
 ```
 
 不要把真实 API key 写进仓库。
@@ -136,19 +136,19 @@ $env:ZOTERO_BN_PROJECT_ID="axi-gold"
 给单个 Zotero note 或 item 加队列标签：
 
 ```powershell
-python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold
+python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id your-project-id
 ```
 
 给一个 collection 的前 N 条 item 加队列标签：
 
 ```powershell
-python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id axi-gold
+python scripts/queue_zotero_items.py --collection-key COLLECTION_KEY --limit 5 --project-id your-project-id
 ```
 
 失败修复后显式重试 error-tagged 项目：
 
 ```powershell
-python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id axi-gold --retry-errors
+python scripts/queue_zotero_items.py NOTE_OR_ITEM_KEY --project-id your-project-id --retry-errors
 ```
 
 Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显式排队会先清除旧的项目错误 marker 并保存 note，然后检查 Better Notes sync status 的 `path + filename`：
@@ -188,10 +188,10 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显
 - 所以必须有一个 Zotero 侧桥：Actions & Tags 脚本，或者将来做成专门的 Zotero bridge plugin。
 - Better Notes 的自动同步不是实时文件监听。它默认可能约 30 秒跑一次，而且只有 Zotero 主窗口有焦点时才跑；正在打开/可见的 note 还可能被跳过。
 - queue daemon 默认每 10 秒跑一次，优先处理新队列。它不会默认替 Better Notes 主动复查全部已绑定 note，避免一条冲突笔记卡住新队列。
-- 如果你明确打开实验性的 `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC`，daemon 只会在队列为空时逐条尝试已绑定 note，并使用 `skipActive: true` 保留 Better Notes 对正在编辑 note 的保护。真正的 Markdown ↔ Zotero note 差异判断仍由 Better Notes 管理。
+- 如果你明确打开实验性的 `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC`，daemon 只会在队列为空时逐条尝试已绑定 note，并使用 `skipActive: true` 保留 Better Notes 对正在编辑 note 的保护。每条 note 成功或失败尝试后都会进入复查间隔，失败还会进入较长冷却；超时不会取消 Better Notes 内部任务，所以脚本会保留该 note 的本地锁并暂停本会话后续主动复查，直到原 Promise 完成。真正的 Markdown ↔ Zotero note 差异判断仍由 Better Notes 管理。
 - 重新排队已经同步且 Markdown 文件存在的 note 时，默认只确认绑定关系并清理队列标签，不强制刷新导出。这样更适合双向同步；如果要用 Zotero 覆盖 Markdown，需要显式打开 `FORCE_EXPORT_EXISTING`。
 - 同一 Zotero note 默认只能属于一个 Better Notes 同步项目，因为 Better Notes 对每个 note 只有一份 sync status。多项目阅读时，使用各自的 child note 更安全。
-- queue daemon 使用 Zotero tag search 查找队列标签，并默认每 10 秒处理最多 8 条新队列；实验复查开启时每轮最多尝试 5 条已绑定项目 note。这比全库扫描轻，但仍不是大型库的最佳长期方案。
+- queue daemon 使用 Zotero tag search 查找队列标签，并默认每 10 秒处理最多 8 条新队列；实验复查开启时每轮最多尝试 5 条已绑定项目 note，同一 note 默认至少间隔 60 秒才会再次复查。这比全库扫描轻，但仍不是大型库的最佳长期方案。
 - 多个项目 daemon 可以同时常驻；timer 和 busy lock 按 `PROJECT_ID` 隔离。同一 `PROJECT_ID` 的脚本重新执行时会重载 timer，使新的 `ROOT_DIR` / `POLL_SECONDS` / `LIBRARY_IDS` 生效。
 
 ## 验证

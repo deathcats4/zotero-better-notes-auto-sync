@@ -44,6 +44,7 @@ const CODEX_ERROR_TAG_PREFIX = "Codex/BN-Sync-Error/";
 const CODEX_INITIALIZING_TAG_PREFIX = "Codex/BN-Initializing/";
 const CODEX_MARKER_PROJECT_RE = /codex-bn-sync:([^:\s<>]+):/g;
 const LINKS_MARKER_PROJECT_RE = /codex-zotero-links:([^:\s<>]+):/g;
+const LINKS_BLOCK_PROJECT_RE = /data-codex-zotero-links="([^"]+)"/g;
 
 function escapeHTML(value) {
   return String(value || "")
@@ -300,6 +301,10 @@ function otherProjectOwnershipTokens(noteItem) {
     const markerProject = match[1];
     if (markerProject && markerProject !== PROJECT_ID) conflicts.push(`links:${markerProject}`);
   }
+  for (const match of html.matchAll(LINKS_BLOCK_PROJECT_RE)) {
+    const blockProject = match[1];
+    if (blockProject && blockProject !== PROJECT_ID) conflicts.push(`links:${blockProject}`);
+  }
   return [...new Set(conflicts)];
 }
 
@@ -321,6 +326,16 @@ function removeOtherProjectTagPrefixes(zoteroItem) {
   }
 }
 
+function stripOtherProjectZoteroLinksBlocks(html) {
+  return String(html || "").replace(
+    /<div\b[^>]*data-codex-zotero-links="([^"]+)"[^>]*>[\s\S]*?<\/div>\s*/g,
+    (block, blockProject) => {
+      const hasOtherProjectMarker = [...block.matchAll(LINKS_MARKER_PROJECT_RE)].some((match) => match[1] && match[1] !== PROJECT_ID);
+      return blockProject === PROJECT_ID && !hasOtherProjectMarker ? block : "";
+    },
+  );
+}
+
 function clearOtherProjectOwnership(noteItem) {
   if (!noteItem?.isNote?.()) return false;
   removeOtherProjectTagPrefixes(noteItem);
@@ -328,13 +343,8 @@ function clearOtherProjectOwnership(noteItem) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p>\\s*<!--\\s*codex-bn-sync:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*</p>\\s*`, "g");
   const bareMarkerRegex = new RegExp(`<!--\\s*codex-bn-sync:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*`, "g");
-  const otherProjectLinksBlockRegex = new RegExp(
-    `<div\\b[^>]*data-codex-zotero-links="(?!${escapeRegExp(PROJECT_ID)}")[^"]*"[^>]*>[\\s\\S]*?<!--\\s*codex-zotero-links:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->[\\s\\S]*?</div>\\s*`,
-    "g",
-  );
   const bareLinksMarkerRegex = new RegExp(`<!--\\s*codex-zotero-links:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*`, "g");
-  const cleaned = html
-    .replace(otherProjectLinksBlockRegex, "")
+  const cleaned = stripOtherProjectZoteroLinksBlocks(html)
     .replace(markerRegex, "")
     .replace(bareMarkerRegex, "")
     .replace(bareLinksMarkerRegex, "");
