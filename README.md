@@ -49,6 +49,7 @@ pip install -r requirements.txt
 
 ```powershell
 python tests/static_checks.py
+python tests/evidence_pack_checks.py
 node tests/safety_logic_checks.js
 ```
 
@@ -73,8 +74,12 @@ Use $zotero-better-notes-obsidian-sync ...
 ```js
 const PROJECT_ID = "your-project-id";
 const ROOT_DIR = "D:\\ObsidianVault\\BetterNotesSync\\your-project-id";
-const TEMPLATE_NAME = "";
+const TEMPLATE_NAME = "[item]Codex 中英文献精读卡";
 ```
+
+推荐先把 `templates/codex-literature-reading-card.better-notes.yml` 导入 Better Notes。这个模板会生成正式的中英文献精读卡，包含文献信息、研究问题、方法数据、核心结论、证据候选表、待人工复核和 Codex 状态区。安装细节见 `references/better-notes-reading-card-template.md`。
+
+如果暂时不想用 Better Notes 模板，可以把 `TEMPLATE_NAME` 留空；脚本会使用内置 fallback，但它只适合兜底，不建议作为长期阅读卡结构。
 
 默认安全开关：
 
@@ -92,6 +97,8 @@ const ALLOW_CROSS_PROJECT_MIGRATION = false;
 
 - `scripts/actions-tags-bn-autosync-selected.js`：手动选中 Zotero item/note 后同步。
 - `scripts/actions-tags-bn-queue-daemon.js`：Zotero 启动后定时搜索队列标签，适合 Codex 自动化。
+- `templates/codex-literature-reading-card.better-notes.yml`：Better Notes 阅读卡模板，对应 `[item]Codex 中英文献精读卡`。
+- `references/better-notes-reading-card-template.md`：模板导入和使用说明。
 
 Windows 路径请使用反斜杠，例如 `D:\\Vault\\Folder`。不要写成 `D:/Vault/Folder`，Zotero 的 Firefox runtime 可能会报 `NS_ERROR_FILE_UNRECOGNIZED_PATH`。
 
@@ -130,6 +137,36 @@ $env:ZOTERO_BN_PROJECT_ID="your-project-id"
 不要把真实 API key 写进仓库。
 
 `ZOTERO_LIBRARY_TYPE=group` 可以让 Python 给 group library 项目加队列标签；但 Zotero 侧 daemon 默认只扫描个人库。要处理 group library，需要在 `scripts/actions-tags-bn-queue-daemon.js` 中配置 `LIBRARY_IDS` 为 Zotero 内部 library ID。
+
+## 导出标注证据包
+
+`scripts/export_zotero_evidence_pack.py` 用来把 Zotero 条目、child notes、PDF annotations 导出成 AI 可读的 JSON/Markdown。它不写 Zotero、不调用 Better Notes，也不会改 Obsidian 文件；作用是让 Codex 先读到你已有的标注和笔记，再决定哪些证据值得写回阅读卡或证据矩阵。
+
+先找一批有标注的测试文章：
+
+```powershell
+python scripts/export_zotero_evidence_pack.py --all-top --limit 50 --only-annotated --summary
+```
+
+如果知道 collection key，可以只扫某个 collection：
+
+```powershell
+python scripts/export_zotero_evidence_pack.py --collection-key COLLECTION_KEY --only-annotated --summary
+```
+
+导出某篇文献的完整证据包：
+
+```powershell
+python scripts/export_zotero_evidence_pack.py ITEM_KEY --format markdown --output evidence-pack.md
+```
+
+按问题先做粗过滤，例如只保留包含 `sulfur isotope` 的标注/笔记：
+
+```powershell
+python scripts/export_zotero_evidence_pack.py ITEM_KEY --query "sulfur isotope" --format json
+```
+
+导出的 annotation 会带 `evidence_id`、页码、标注正文、标注评论、`needs_review` 状态，以及类似 `zotero://open-pdf/library/items/PDFKEY?page=2&annotation=ANNKEY` 的 Zotero PDF 深链。这个深链是给人回 Zotero 核查用的；AI 真正读取内容靠导出的 JSON/Markdown 字段。
 
 ## 队列用法
 
