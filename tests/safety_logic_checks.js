@@ -197,7 +197,6 @@ async function checkHelpers(label, helpers) {
   global.Zotero = {
     debug() {},
     Libraries: { get: () => ({ libraryType: "user" }) },
-    BetterNotes: { api: { convert: { note2link: (note) => `zotero://note/u/${note.key}` } } },
     Items: { get: () => [] },
   };
   assert.strictEqual(
@@ -207,7 +206,7 @@ async function checkHelpers(label, helpers) {
   );
   assert(linkedHTML.includes("data-codex-zotero-links=\"PROJECT_NAME\""), `${label}: link block should be project-scoped`);
   assert(linkedHTML.includes("zotero://select/library/items/ITEMKEY"), `${label}: link block should include Zotero item select URI`);
-  assert(linkedHTML.includes("zotero://note/u/NOTEKEY"), `${label}: link block should include Better Notes note URI`);
+  assert(linkedHTML.includes("zotero://select/library/items/NOTEKEY"), `${label}: link block should include Zotero note select URI`);
   assert(linkedHTML.includes("zotero://open-pdf/library/items/PDFKEY"), `${label}: link block should include PDF open URI`);
   assert.strictEqual(
     (linkedHTML.match(/data-codex-zotero-links/g) || []).length,

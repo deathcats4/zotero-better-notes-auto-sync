@@ -558,12 +558,6 @@ function zoteroSelectLink(zoteroItem) {
 }
 
 function zoteroNoteLink(noteItem) {
-  try {
-    const note2link = Zotero.BetterNotes?.api?.convert?.note2link;
-    if (typeof note2link === "function") return note2link(noteItem);
-  } catch (e) {
-    Zotero.debug("[Codex BN Sync] Better Notes note2link failed for note " + (noteItem.key || noteItem.id) + ": " + e);
-  }
   return zoteroSelectLink(noteItem);
 }
 
