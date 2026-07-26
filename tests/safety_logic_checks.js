@@ -12,11 +12,12 @@ function loadHelpers(relativePath, stopMarker) {
   const prefix = source.slice(0, stop);
   return new Function(
     `${prefix}
-return {
-  assertNoCrossProjectConflict,
-  clearOtherProjectOwnership,
-  codexNoteMatchScore,
-  getRootSyncState,
+  return {
+    assertNoCrossProjectConflict,
+    ensureZoteroLinksBlock,
+    clearOtherProjectOwnership,
+    codexNoteMatchScore,
+    getRootSyncState,
   hasAnyNoteContent,
   hasMinimumReadingContent,
   hasUnsafeFilename,
@@ -28,8 +29,10 @@ return {
   pathExists,
   preflightMarkdownFilename,
   statusFullPath,
-  visibleNoteText,
-};`,
+    visibleNoteText,
+    zoteroPDFLink,
+    zoteroSelectLink,
+  };`,
   )();
 }
 
@@ -165,6 +168,62 @@ async function checkHelpers(label, helpers) {
   );
   assert(!migrationHTML.includes("old-project"), `${label}: migration cleanup should remove old project marker`);
   assert(migrationHTML.includes("codex-bn-sync:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current marker`);
+
+  const pdfAttachment = {
+    libraryID: 1,
+    key: "PDFKEY",
+    isPDFAttachment: () => true,
+    getField: () => "Primary PDF",
+  };
+  const parentItem = {
+    libraryID: 1,
+    key: "ITEMKEY",
+    isRegularItem: () => true,
+    getField: (field) => (field === "title" ? "Paper Title" : ""),
+    getBestAttachments: async () => [pdfAttachment],
+    getAttachments: () => [],
+  };
+  let linkedHTML = "<p>Visible reading note</p>\n<p><!-- codex-bn-sync:PROJECT_NAME:ITEMKEY --></p>";
+  const linkedNote = {
+    libraryID: 1,
+    key: "NOTEKEY",
+    isNote: () => true,
+    getNoteTitle: () => "Reading Note",
+    getNote: () => linkedHTML,
+    setNote: (html) => {
+      linkedHTML = html;
+    },
+  };
+  global.Zotero = {
+    debug() {},
+    Libraries: { get: () => ({ libraryType: "user" }) },
+    BetterNotes: { api: { convert: { note2link: (note) => `zotero://note/u/${note.key}` } } },
+    Items: { get: () => [] },
+  };
+  assert.strictEqual(
+    await helpers.ensureZoteroLinksBlock(parentItem, linkedNote),
+    true,
+    `${label}: first link-layer insertion should modify the note`,
+  );
+  assert(linkedHTML.includes("data-codex-zotero-links=\"PROJECT_NAME\""), `${label}: link block should be project-scoped`);
+  assert(linkedHTML.includes("zotero://select/library/items/ITEMKEY"), `${label}: link block should include Zotero item select URI`);
+  assert(linkedHTML.includes("zotero://note/u/NOTEKEY"), `${label}: link block should include Better Notes note URI`);
+  assert(linkedHTML.includes("zotero://open-pdf/library/items/PDFKEY"), `${label}: link block should include PDF open URI`);
+  assert.strictEqual(
+    (linkedHTML.match(/data-codex-zotero-links/g) || []).length,
+    1,
+    `${label}: link block should appear once after first insertion`,
+  );
+  assert.strictEqual(
+    await helpers.ensureZoteroLinksBlock(parentItem, linkedNote),
+    false,
+    `${label}: repeated link-layer insertion should be a no-op`,
+  );
+  assert.strictEqual(
+    (linkedHTML.match(/data-codex-zotero-links/g) || []).length,
+    1,
+    `${label}: repeated link-layer insertion should not duplicate the block`,
+  );
 
   global.Zotero = { debug() {} };
   global.IOUtils = { exists: async () => true };

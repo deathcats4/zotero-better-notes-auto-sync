@@ -31,6 +31,7 @@ const ERROR_TAG = `Codex/BN-Sync-Error/${PROJECT_ID}`;
 const REVIEW_TAG = "review/needs-review";
 const CODEX_MARKER_PREFIX = `codex-bn-sync:${PROJECT_ID}:`;
 const ERROR_MARKER_PREFIX = `codex-bn-sync-error:${PROJECT_ID}:`;
+const LINKS_MARKER_PREFIX = `codex-zotero-links:${PROJECT_ID}:`;
 const BN_AUTOSYNC_PREF = "extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes";
 const FORCE_EXPORT_EXISTING = false; // Keep false unless you explicitly want Zotero note -> Markdown overwrite.
 const RECREATE_MISSING_MARKDOWN = true; // Safe repair: export only when the linked Markdown file is gone.
@@ -537,11 +538,114 @@ function buildFallbackHTML(parentItem) {
 }
 
 function ensureProjectMarker(noteItem, parentKey) {
-  if (!noteItem?.isNote?.()) return;
+  if (!noteItem?.isNote?.()) return false;
   const marker = `${CODEX_MARKER_PREFIX}${parentKey}`;
   const html = noteItem.getNote?.() || "";
-  if (html.includes(marker)) return;
+  if (html.includes(marker)) return false;
   noteItem.setNote(`${html}\n<p><!-- ${marker} --></p>`);
+  return true;
+}
+
+function getLibrarySegment(zoteroItem) {
+  const library = Zotero.Libraries.get(zoteroItem.libraryID);
+  if (library?.libraryType === "user") return "library";
+  const groupID = library?.groupID || library?.id;
+  return groupID ? `groups/${groupID}` : "library";
+}
+
+function zoteroSelectLink(zoteroItem) {
+  return `zotero://select/${getLibrarySegment(zoteroItem)}/items/${zoteroItem.key}`;
+}
+
+function zoteroNoteLink(noteItem) {
+  try {
+    const note2link = Zotero.BetterNotes?.api?.convert?.note2link;
+    if (typeof note2link === "function") return note2link(noteItem);
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] Better Notes note2link failed for note " + (noteItem.key || noteItem.id) + ": " + e);
+  }
+  return zoteroSelectLink(noteItem);
+}
+
+async function getBestPDFAttachment(parentItem) {
+  if (!parentItem?.isRegularItem?.()) return null;
+  try {
+    const bestAttachments = (await parentItem.getBestAttachments?.()) || [];
+    const bestPDF = bestAttachments.find((att) => att?.isPDFAttachment?.() || att?.attachmentContentType === "application/pdf");
+    if (bestPDF) return bestPDF;
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] getBestAttachments failed for " + (parentItem.key || parentItem.id) + ": " + e);
+  }
+
+  try {
+    const attachments = Zotero.Items.get(parentItem.getAttachments?.() || []);
+    return attachments.find((att) => att?.isPDFAttachment?.() || att?.attachmentContentType === "application/pdf") || null;
+  } catch (e) {
+    Zotero.debug("[Codex BN Sync] PDF attachment fallback failed for " + (parentItem.key || parentItem.id) + ": " + e);
+    return null;
+  }
+}
+
+function zoteroPDFLink(pdfAttachment) {
+  return `zotero://open-pdf/${getLibrarySegment(pdfAttachment)}/items/${pdfAttachment.key}`;
+}
+
+function zoteroLinksBlockRegex(markerKey) {
+  const marker = `${LINKS_MARKER_PREFIX}${markerKey}`;
+  return new RegExp(
+    `<div\\s+data-codex-zotero-links="${escapeRegExp(PROJECT_ID)}"[\\s\\S]*?<!--\\s*${escapeRegExp(marker)}\\s*-->[\\s\\S]*?</div>\\s*`,
+    "g",
+  );
+}
+
+function insertBeforeProjectMarker(html, parentKey, block) {
+  const projectMarker = `${CODEX_MARKER_PREFIX}${parentKey}`;
+  const markerRegex = new RegExp(`\\s*<p><!--\\s*${escapeRegExp(projectMarker)}\\s*--></p>\\s*$`);
+  if (markerRegex.test(html)) {
+    return html.replace(markerRegex, `\n${block}\n<p><!-- ${projectMarker} --></p>`);
+  }
+  return `${html.trimEnd()}\n${block}`;
+}
+
+async function buildZoteroLinksBlock(parentItem, noteItem) {
+  const markerKey = parentItem?.key || noteItem.key;
+  const title = parentItem?.getField?.("title") || noteItem.getNoteTitle?.() || noteItem.key;
+  const links = [];
+
+  if (parentItem) {
+    links.push(`<li><strong>Zotero 条目：</strong><a href="${escapeHTML(zoteroSelectLink(parentItem))}">${escapeHTML(title)}</a></li>`);
+  }
+
+  links.push(`<li><strong>阅读卡 Note：</strong><a href="${escapeHTML(zoteroNoteLink(noteItem))}">${escapeHTML(noteItem.key)}</a></li>`);
+
+  const pdfAttachment = parentItem ? await getBestPDFAttachment(parentItem) : null;
+  if (pdfAttachment) {
+    links.push(`<li><strong>PDF：</strong><a href="${escapeHTML(zoteroPDFLink(pdfAttachment))}">${escapeHTML(pdfAttachment.getField?.("title") || "打开 PDF")}</a></li>`);
+  }
+
+  return `
+<div data-codex-zotero-links="${escapeHTML(PROJECT_ID)}">
+<h2>Zotero 链接</h2>
+<ul>
+${links.join("\n")}
+</ul>
+<p><!-- ${LINKS_MARKER_PREFIX}${markerKey} --></p>
+</div>
+`.trim();
+}
+
+async function ensureZoteroLinksBlock(parentItem, noteItem) {
+  if (!noteItem?.isNote?.()) return false;
+  const ownerItem = parentItem || getParentRegularItem(noteItem);
+  const markerKey = ownerItem?.key || noteItem.key;
+  const block = await buildZoteroLinksBlock(ownerItem, noteItem);
+  const html = noteItem.getNote?.() || "";
+  const blockRegex = zoteroLinksBlockRegex(markerKey);
+  const withoutOldBlock = html.replace(blockRegex, "").trimEnd();
+  const nextHTML = insertBeforeProjectMarker(withoutOldBlock, markerKey, block);
+  if (nextHTML === html) return false;
+  noteItem.setNote(nextHTML);
+  return true;
 }
 
 function clearErrorComment(noteItem) {
@@ -763,20 +867,22 @@ const failures = [];
 
 for (const raw of selected) {
   let noteItem = null;
+  let parentItem = null;
   try {
     if (raw.isNote && raw.isNote()) {
       assertNoCrossProjectConflict(raw);
       noteItem = raw;
+      parentItem = getParentRegularItem(raw);
       addTagOnce(noteItem, NOTE_TAG);
       addTagOnce(noteItem, REVIEW_TAG);
     } else {
-      const parent = getParentRegularItem(raw);
-      if (!parent) {
+      parentItem = getParentRegularItem(raw);
+      if (!parentItem) {
         stats.skipped += 1;
         continue;
       }
 
-      const result = await withItemLock(parent, () => getOrCreateReadingNote(parent));
+      const result = await withItemLock(parentItem, () => getOrCreateReadingNote(parentItem));
       noteItem = result.noteItem;
       if (result.created) stats.created += 1;
       else stats.existing += 1;
@@ -785,7 +891,11 @@ for (const raw of selected) {
       if (result.contentSource === "reinitialized") stats.fallback += 1;
     }
 
-    if (clearErrorComment(noteItem)) {
+    let noteChanged = false;
+    if (clearErrorComment(noteItem)) noteChanged = true;
+    if (parentItem && ensureProjectMarker(noteItem, parentItem.key)) noteChanged = true;
+    if (await ensureZoteroLinksBlock(parentItem, noteItem)) noteChanged = true;
+    if (noteChanged) {
       await saveChangedItems([noteItem]);
     }
 
