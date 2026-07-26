@@ -5,8 +5,8 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 
-function loadHelpers(relativePath, stopMarker) {
-  const source = fs.readFileSync(path.join(ROOT, relativePath), "utf8");
+function loadHelpers(relativePath, stopMarker, transformSource = (source) => source) {
+  const source = transformSource(fs.readFileSync(path.join(ROOT, relativePath), "utf8").replace(/\r\n/g, "\n"));
   const stop = source.indexOf(stopMarker);
   if (stop < 0) throw new Error(`Could not find stop marker in ${relativePath}`);
   const prefix = source.slice(0, stop);
@@ -17,23 +17,96 @@ function loadHelpers(relativePath, stopMarker) {
     ensureZoteroLinksBlock,
     clearOtherProjectOwnership,
     codexNoteMatchScore,
+    getProjectLinkedNotesForAutosync: typeof getProjectLinkedNotesForAutosync === "function" ? getProjectLinkedNotesForAutosync : undefined,
     getRootSyncState,
   hasAnyNoteContent,
   hasMinimumReadingContent,
   hasUnsafeFilename,
   hasUnsafeMarkdownFilename,
+  linkedNoteAutosyncHasPendingTimeouts: typeof linkedNoteAutosyncHasPendingTimeouts === "function" ? linkedNoteAutosyncHasPendingTimeouts : undefined,
+  linkedNoteAutosyncIsRecentlyAttempted: typeof linkedNoteAutosyncIsRecentlyAttempted === "function" ? linkedNoteAutosyncIsRecentlyAttempted : undefined,
   isFilePathInRoot,
   isPathInRoot,
   isStatusFileInRoot,
   otherProjectOwnershipTokens,
   pathExists,
   preflightMarkdownFilename,
+  rotateLinkedNoteAutosyncCandidates: typeof rotateLinkedNoteAutosyncCandidates === "function" ? rotateLinkedNoteAutosyncCandidates : undefined,
+  runProjectLinkedNoteAutosync: typeof runProjectLinkedNoteAutosync === "function" ? runProjectLinkedNoteAutosync : undefined,
   statusFullPath,
+    withNoteLock,
+    withTimeout: typeof withTimeout === "function" ? withTimeout : undefined,
     visibleNoteText,
     zoteroPDFLink,
     zoteroSelectLink,
   };`,
   )();
+}
+
+function loadDaemonAutosyncHelpers() {
+  return loadHelpers("scripts/actions-tags-bn-queue-daemon.js", "\nasync function processOneQueuedItem", (source) =>
+    source
+      .replace(/const ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC = false;[^\n]*/, "const ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC = true;")
+      .replace("const LINKED_NOTE_AUTOSYNC_TIMEOUT_MS = 12000;", "const LINKED_NOTE_AUTOSYNC_TIMEOUT_MS = 25;")
+      .replace("const LINKED_NOTE_AUTOSYNC_RECHECK_MS = 60 * 1000;", "const LINKED_NOTE_AUTOSYNC_RECHECK_MS = 1000;"),
+  );
+}
+
+function resetAutosyncGlobals() {
+  for (const key of [
+    "__codexBNItemLocks",
+    "__codexBNNoteLocks",
+    "__codexBNLinkedNoteAutosyncCooldowns",
+    "__codexBNLinkedNoteAutosyncCursors",
+    "__codexBNLinkedNoteAutosyncAttempts",
+    "__codexBNLinkedNoteAutosyncTimedOut",
+  ]) {
+    delete globalThis[key];
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function makeSyncedNote(id) {
+  return {
+    id,
+    libraryID: 1,
+    key: `NOTE${id}`,
+    deleted: false,
+    isNote: () => true,
+    getTags: () => [{ tag: "Codex/BN-Synced/PROJECT_NAME" }, { tag: "Codex/BN-Note/PROJECT_NAME" }],
+    getNote: () => "<p><!-- codex-bn-sync:PROJECT_NAME:ITEMKEY --></p><p>Synced reading note.</p>",
+  };
+}
+
+function installAutosyncZoteroStub(notes, onSyncing) {
+  const byID = new Map(notes.map((note) => [note.id, note]));
+  const root = "D:\\ObsidianVault\\BetterNotesSync\\PROJECT_NAME";
+  global.IOUtils = { exists: async () => true };
+  global.Zotero = {
+    debug() {},
+    Notes: { _editorInstances: [] },
+    Libraries: { userLibraryID: 1 },
+    Search: function Search() {
+      this.addCondition = () => {};
+      this.search = async () => notes.map((note) => note.id);
+    },
+    Items: {
+      get: (ids) => (Array.isArray(ids) ? ids.map((id) => byID.get(id)).filter(Boolean) : byID.get(ids)),
+      getAll: async () => notes,
+    },
+    BetterNotes: {
+      hooks: { onSyncing },
+      api: {
+        sync: {
+          getSyncStatus: async (noteId) => ({ path: root, filename: `note-${noteId}.md` }),
+          isSyncNote: async () => true,
+        },
+      },
+    },
+  };
 }
 
 async function checkHelpers(label, helpers) {
@@ -138,6 +211,26 @@ async function checkHelpers(label, helpers) {
     `${label}: should detect other project markers`,
   );
 
+  const linksConflictNote = {
+    getTags: () => [],
+    getNote: () => '<div data-codex-zotero-links="other-project"><p>Old links</p><!-- codex-zotero-links:other-project:ITEMKEY --></div>',
+  };
+  assert.deepStrictEqual(
+    helpers.otherProjectOwnershipTokens(linksConflictNote),
+    ["links:other-project"],
+    `${label}: should detect other project Zotero backlink markers`,
+  );
+
+  const prefixLinksConflictNote = {
+    getTags: () => [],
+    getNote: () => '<div data-codex-zotero-links="PROJECT_NAME-old"><p>Prefix links</p><!-- codex-zotero-links:PROJECT_NAME-old:ITEMKEY --></div>',
+  };
+  assert.deepStrictEqual(
+    helpers.otherProjectOwnershipTokens(prefixLinksConflictNote),
+    ["links:PROJECT_NAME-old"],
+    `${label}: should detect backlink projects that share the current project prefix`,
+  );
+
   let migrationTags = [
     "Codex/Queue/BN-Sync/PROJECT_NAME",
     "Codex/BN-Synced/PROJECT_NAME",
@@ -148,6 +241,8 @@ async function checkHelpers(label, helpers) {
     "Codex/BN-Initializing/old-project",
   ];
   let migrationHTML =
+    '<div data-codex-zotero-links="old-project"><p>Old links</p><!-- codex-zotero-links:old-project:ITEMKEY --></div>' +
+    '<div data-codex-zotero-links="PROJECT_NAME"><p>Current links</p><!-- codex-zotero-links:PROJECT_NAME:ITEMKEY --></div>' +
     '<p><!-- codex-bn-sync:old-project:ITEMKEY --></p><p><!-- codex-bn-sync:PROJECT_NAME:ITEMKEY --></p><p>Visible text</p>';
   const migrationNote = {
     isNote: () => true,
@@ -166,8 +261,25 @@ async function checkHelpers(label, helpers) {
     ["Codex/Queue/BN-Sync/PROJECT_NAME", "Codex/BN-Synced/PROJECT_NAME", "Codex/BN-Note/PROJECT_NAME"],
     `${label}: migration cleanup should remove only other-project ownership tags`,
   );
-  assert(!migrationHTML.includes("old-project"), `${label}: migration cleanup should remove old project marker`);
+  assert(!migrationHTML.includes("old-project"), `${label}: migration cleanup should remove old project marker and backlink block`);
   assert(migrationHTML.includes("codex-bn-sync:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current marker`);
+  assert(migrationHTML.includes("codex-zotero-links:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current backlink block`);
+
+  let prefixMigrationHTML =
+    '<div data-codex-zotero-links="PROJECT_NAME-old"><p>Prefix old links</p><!-- codex-zotero-links:PROJECT_NAME-old:ITEMKEY --></div>' +
+    '<div data-codex-zotero-links="PROJECT_NAME"><p>Current links</p><!-- codex-zotero-links:PROJECT_NAME:ITEMKEY --></div>';
+  const prefixMigrationNote = {
+    isNote: () => true,
+    getTags: () => [],
+    getNote: () => prefixMigrationHTML,
+    setNote: (html) => {
+      prefixMigrationHTML = html;
+    },
+  };
+  helpers.clearOtherProjectOwnership(prefixMigrationNote);
+  assert(!prefixMigrationHTML.includes("PROJECT_NAME-old"), `${label}: migration cleanup should remove prefix-matching old backlink project`);
+  assert(!prefixMigrationHTML.includes("Prefix old links"), `${label}: migration cleanup should not leave old backlink content after marker cleanup`);
+  assert(prefixMigrationHTML.includes("codex-zotero-links:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current prefix backlink block`);
 
   const pdfAttachment = {
     libraryID: 1,
@@ -313,6 +425,60 @@ async function checkHelpers(label, helpers) {
   assert.match(missingStatusAPI.statusCheckError, /isSyncNote_unavailable/, `${label}: missing status API should be explicit`);
 }
 
+async function checkLinkedNoteAutosyncBehavior() {
+  let helpers = loadDaemonAutosyncHelpers();
+  resetAutosyncGlobals();
+  const lockedNote = makeSyncedNote(1);
+  let releaseSync;
+  const pendingSync = new Promise((resolve) => {
+    releaseSync = resolve;
+  });
+  installAutosyncZoteroStub([lockedNote], () => pendingSync);
+  const timeoutStats = await helpers.runProjectLinkedNoteAutosync();
+  assert.strictEqual(timeoutStats.attempted, 1, "daemon: timeout path should count the attempted Better Notes call");
+  assert.strictEqual(timeoutStats.timedOut, 1, "daemon: unresolved Better Notes call should time out");
+  assert.strictEqual(helpers.linkedNoteAutosyncHasPendingTimeouts(), true, "daemon: timed-out promise should suspend linked-note autosync");
+  await assert.rejects(
+    () => helpers.withNoteLock(lockedNote, async () => "should not run"),
+    /codex_bn_lock_busy/,
+    "daemon: note lock must remain held until the original Better Notes promise resolves",
+  );
+  releaseSync();
+  await sleep(0);
+  await sleep(0);
+  assert.strictEqual(helpers.linkedNoteAutosyncHasPendingTimeouts(), false, "daemon: timed-out promise should clear suspension after it settles");
+  assert.strictEqual(await helpers.withNoteLock(lockedNote, async () => "released"), "released", "daemon: note lock should release after original promise settles");
+
+  helpers = loadDaemonAutosyncHelpers();
+  resetAutosyncGlobals();
+  const candidates = Array.from({ length: 12 }, (_, index) => ({ id: index + 1 }));
+  const selected = new Set();
+  for (let i = 0; i < 3; i += 1) {
+    for (const candidate of helpers.rotateLinkedNoteAutosyncCandidates(candidates)) {
+      selected.add(candidate.id);
+    }
+  }
+  assert.deepStrictEqual(
+    [...selected].sort((a, b) => a - b),
+    candidates.map((candidate) => candidate.id),
+    "daemon: rotation should cover all 12 candidates across three 5-note ticks",
+  );
+
+  helpers = loadDaemonAutosyncHelpers();
+  resetAutosyncGlobals();
+  const recentNote = makeSyncedNote(2);
+  let syncCalls = 0;
+  installAutosyncZoteroStub([recentNote], async () => {
+    syncCalls += 1;
+  });
+  const firstStats = await helpers.runProjectLinkedNoteAutosync();
+  const secondStats = await helpers.runProjectLinkedNoteAutosync();
+  assert.strictEqual(firstStats.attempted, 1, "daemon: first eligible note should be checked once");
+  assert.strictEqual(secondStats.attempted, 0, "daemon: recently checked note should not be called again inside the recheck interval");
+  assert.strictEqual(secondStats.skippedRecent, 1, "daemon: recent attempt should be reported as a skipped recheck");
+  assert.strictEqual(syncCalls, 1, "daemon: successful check should be throttled by the recheck interval");
+}
+
 async function main() {
   await checkHelpers(
     "manual",
@@ -320,8 +486,9 @@ async function main() {
   );
   await checkHelpers(
     "daemon",
-    loadHelpers("scripts/actions-tags-bn-queue-daemon.js", "\nasync function queuedItemsFromSearch"),
+    loadHelpers("scripts/actions-tags-bn-queue-daemon.js", "\nasync function processOneQueuedItem"),
   );
+  await checkLinkedNoteAutosyncBehavior();
 
   console.log("Safety logic checks passed.");
 }
