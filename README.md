@@ -114,7 +114,7 @@ extensions.zotero.Knowledge4Zotero.sync.autoSyncLinkedNotes
 
 如果它是关闭状态，脚本仍可调用 `syncMDBatch` 做注册/导出，但后续 Zotero note 与 Markdown 的周期性双向同步可能不会自动运行。
 
-queue daemon 还会定期让 Better Notes 复查本项目已经绑定的阅读卡。这样可以避开 Better Notes 默认定时器的两个限制：Zotero 主窗口必须有焦点、正在打开的 note 会被跳过。这个复查走 Better Notes 自己的双向比较逻辑，不用 `syncMDBatch()` 强制覆盖已有 Markdown。
+queue daemon 的核心职责是处理新队列：创建/复用阅读卡、注册 Better Notes Markdown 同步、补 Zotero 回链。已绑定阅读卡的主动复查属于实验功能，默认关闭；如果你手动打开 `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC`，它只会在新队列为空时尝试，并且保持 Better Notes 的 active note 保护。
 
 ## 配置 pyzotero
 
@@ -187,11 +187,11 @@ Zotero 桌面端同步到这个标签后，queue daemon 会逐 note 处理。显
 - pyzotero 不能直接调用 Better Notes API；Better Notes API 只存在于 Zotero 桌面端进程里。
 - 所以必须有一个 Zotero 侧桥：Actions & Tags 脚本，或者将来做成专门的 Zotero bridge plugin。
 - Better Notes 的自动同步不是实时文件监听。它默认可能约 30 秒跑一次，而且只有 Zotero 主窗口有焦点时才跑；正在打开/可见的 note 还可能被跳过。
-- queue daemon 默认每 10 秒跑一次。除了处理新队列，也会把本项目已绑定、路径正确、文件存在的 note 交给 Better Notes 的双向比较同步入口，弥补上面这个“等很久但不自动变”的问题。
-- 真正的 Markdown ↔ Zotero note 差异判断仍由 Better Notes 管理；本项目负责注册阅读卡，并触发本项目范围内的复查。
+- queue daemon 默认每 10 秒跑一次，优先处理新队列。它不会默认替 Better Notes 主动复查全部已绑定 note，避免一条冲突笔记卡住新队列。
+- 如果你明确打开实验性的 `ENABLE_PROJECT_LINKED_NOTE_AUTOSYNC`，daemon 只会在队列为空时逐条尝试已绑定 note，并使用 `skipActive: true` 保留 Better Notes 对正在编辑 note 的保护。真正的 Markdown ↔ Zotero note 差异判断仍由 Better Notes 管理。
 - 重新排队已经同步且 Markdown 文件存在的 note 时，默认只确认绑定关系并清理队列标签，不强制刷新导出。这样更适合双向同步；如果要用 Zotero 覆盖 Markdown，需要显式打开 `FORCE_EXPORT_EXISTING`。
 - 同一 Zotero note 默认只能属于一个 Better Notes 同步项目，因为 Better Notes 对每个 note 只有一份 sync status。多项目阅读时，使用各自的 child note 更安全。
-- queue daemon 使用 Zotero tag search 查找队列标签，并默认每 10 秒处理最多 8 条新队列；每轮最多复查 20 条已绑定项目 note。这比全库扫描轻，但仍不是大型库的最佳长期方案。
+- queue daemon 使用 Zotero tag search 查找队列标签，并默认每 10 秒处理最多 8 条新队列；实验复查开启时每轮最多尝试 5 条已绑定项目 note。这比全库扫描轻，但仍不是大型库的最佳长期方案。
 - 多个项目 daemon 可以同时常驻；timer 和 busy lock 按 `PROJECT_ID` 隔离。同一 `PROJECT_ID` 的脚本重新执行时会重载 timer，使新的 `ROOT_DIR` / `POLL_SECONDS` / `LIBRARY_IDS` 生效。
 
 ## 验证

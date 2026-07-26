@@ -6,7 +6,7 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 
 function loadHelpers(relativePath, stopMarker) {
-  const source = fs.readFileSync(path.join(ROOT, relativePath), "utf8");
+  const source = fs.readFileSync(path.join(ROOT, relativePath), "utf8").replace(/\r\n/g, "\n");
   const stop = source.indexOf(stopMarker);
   if (stop < 0) throw new Error(`Could not find stop marker in ${relativePath}`);
   const prefix = source.slice(0, stop);
@@ -138,6 +138,16 @@ async function checkHelpers(label, helpers) {
     `${label}: should detect other project markers`,
   );
 
+  const linksConflictNote = {
+    getTags: () => [],
+    getNote: () => '<div data-codex-zotero-links="other-project"><p>Old links</p><!-- codex-zotero-links:other-project:ITEMKEY --></div>',
+  };
+  assert.deepStrictEqual(
+    helpers.otherProjectOwnershipTokens(linksConflictNote),
+    ["links:other-project"],
+    `${label}: should detect other project Zotero backlink markers`,
+  );
+
   let migrationTags = [
     "Codex/Queue/BN-Sync/PROJECT_NAME",
     "Codex/BN-Synced/PROJECT_NAME",
@@ -148,6 +158,8 @@ async function checkHelpers(label, helpers) {
     "Codex/BN-Initializing/old-project",
   ];
   let migrationHTML =
+    '<div data-codex-zotero-links="old-project"><p>Old links</p><!-- codex-zotero-links:old-project:ITEMKEY --></div>' +
+    '<div data-codex-zotero-links="PROJECT_NAME"><p>Current links</p><!-- codex-zotero-links:PROJECT_NAME:ITEMKEY --></div>' +
     '<p><!-- codex-bn-sync:old-project:ITEMKEY --></p><p><!-- codex-bn-sync:PROJECT_NAME:ITEMKEY --></p><p>Visible text</p>';
   const migrationNote = {
     isNote: () => true,
@@ -166,8 +178,9 @@ async function checkHelpers(label, helpers) {
     ["Codex/Queue/BN-Sync/PROJECT_NAME", "Codex/BN-Synced/PROJECT_NAME", "Codex/BN-Note/PROJECT_NAME"],
     `${label}: migration cleanup should remove only other-project ownership tags`,
   );
-  assert(!migrationHTML.includes("old-project"), `${label}: migration cleanup should remove old project marker`);
+  assert(!migrationHTML.includes("old-project"), `${label}: migration cleanup should remove old project marker and backlink block`);
   assert(migrationHTML.includes("codex-bn-sync:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current marker`);
+  assert(migrationHTML.includes("codex-zotero-links:PROJECT_NAME:ITEMKEY"), `${label}: migration cleanup should preserve current backlink block`);
 
   const pdfAttachment = {
     libraryID: 1,

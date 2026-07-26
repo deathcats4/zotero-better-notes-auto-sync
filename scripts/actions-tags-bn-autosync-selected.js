@@ -43,6 +43,7 @@ const CODEX_NOTE_TAG_PREFIX = "Codex/BN-Note/";
 const CODEX_ERROR_TAG_PREFIX = "Codex/BN-Sync-Error/";
 const CODEX_INITIALIZING_TAG_PREFIX = "Codex/BN-Initializing/";
 const CODEX_MARKER_PROJECT_RE = /codex-bn-sync:([^:\s<>]+):/g;
+const LINKS_MARKER_PROJECT_RE = /codex-zotero-links:([^:\s<>]+):/g;
 
 function escapeHTML(value) {
   return String(value || "")
@@ -295,6 +296,10 @@ function otherProjectOwnershipTokens(noteItem) {
     const markerProject = match[1];
     if (markerProject && markerProject !== PROJECT_ID) conflicts.push(`marker:${markerProject}`);
   }
+  for (const match of html.matchAll(LINKS_MARKER_PROJECT_RE)) {
+    const markerProject = match[1];
+    if (markerProject && markerProject !== PROJECT_ID) conflicts.push(`links:${markerProject}`);
+  }
   return [...new Set(conflicts)];
 }
 
@@ -323,7 +328,16 @@ function clearOtherProjectOwnership(noteItem) {
   const html = noteItem.getNote?.() || "";
   const markerRegex = new RegExp(`<p>\\s*<!--\\s*codex-bn-sync:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*</p>\\s*`, "g");
   const bareMarkerRegex = new RegExp(`<!--\\s*codex-bn-sync:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*`, "g");
-  const cleaned = html.replace(markerRegex, "").replace(bareMarkerRegex, "");
+  const otherProjectLinksBlockRegex = new RegExp(
+    `<div\\b[^>]*data-codex-zotero-links="(?!${escapeRegExp(PROJECT_ID)}")[^"]*"[^>]*>[\\s\\S]*?<!--\\s*codex-zotero-links:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->[\\s\\S]*?</div>\\s*`,
+    "g",
+  );
+  const bareLinksMarkerRegex = new RegExp(`<!--\\s*codex-zotero-links:(?!${escapeRegExp(PROJECT_ID)}:)[\\s\\S]*?-->\\s*`, "g");
+  const cleaned = html
+    .replace(otherProjectLinksBlockRegex, "")
+    .replace(markerRegex, "")
+    .replace(bareMarkerRegex, "")
+    .replace(bareLinksMarkerRegex, "");
   if (cleaned !== html) {
     noteItem.setNote(cleaned);
     return true;
